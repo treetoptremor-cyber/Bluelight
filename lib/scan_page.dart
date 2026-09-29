@@ -9,7 +9,9 @@ import 'light_page.dart';
 
 const _scanTimeout = Duration(seconds: 15);
 
-/// Scans for nearby Hue Bluetooth bulbs and lists them.
+/// Scans for nearby Hue Bluetooth bulbs and lists them, together with Hue
+/// bulbs the phone is already connected to or paired with. Those may not be
+/// advertising while another app (such as the Hue app) holds a connection.
 class ScanPage extends StatefulWidget {
   const ScanPage({super.key});
 
@@ -20,6 +22,7 @@ class ScanPage extends StatefulWidget {
 class _ScanPageState extends State<ScanPage> {
   BluetoothAdapterState _adapterState = BluetoothAdapterState.unknown;
   List<ScanResult> _results = [];
+  List<_Bulb> _known = [];
   bool _scanning = false;
   bool? _supported;
 
@@ -69,8 +72,8 @@ class _ScanPageState extends State<ScanPage> {
     names: [r.advertisementData.advName, r.device.platformName],
   );
 
-  static String _nameOf(ScanResult r) {
-    for (final n in [r.advertisementData.advName, r.device.platformName]) {
+  static String _nameOf(List<String> names) {
+    for (final n in names) {
       if (n.trim().isNotEmpty) return n.trim();
     }
     return 'Hue light';
@@ -82,13 +85,63 @@ class _ScanPageState extends State<ScanPage> {
     } catch (e) {
       _showError('Could not start scan: $e');
     }
+    // After startScan, which requests the Bluetooth permissions on Android,
+    // so the two don't raise overlapping permission requests.
+    await _loadKnownBulbs();
   }
 
-  Future<void> _open(ScanResult r) async {
+  /// Hue bulbs this phone is connected to (by any app) or paired with.
+  /// Best effort: failures here just mean the list relies on the scan.
+  Future<void> _loadKnownBulbs() async {
+    final known = <_Bulb>[];
+    try {
+      final connected = await FlutterBluePlus.systemDevices([
+        HueUuids.lightService,
+      ]);
+      for (final d in connected) {
+        // iOS filters by service; Android returns every connected device.
+        if (Platform.isIOS || looksLikeHueBulb(names: [d.platformName])) {
+          known.add(_Bulb(d, _nameOf([d.platformName]), status: 'Connected'));
+        }
+      }
+    } catch (_) {
+      // Not available; rely on the scan.
+    }
+    if (Platform.isAndroid) {
+      try {
+        for (final d in await FlutterBluePlus.bondedDevices) {
+          if (known.any((k) => k.device.remoteId == d.remoteId)) continue;
+          if (looksLikeHueBulb(names: [d.platformName])) {
+            known.add(_Bulb(d, _nameOf([d.platformName]), status: 'Paired'));
+          }
+        }
+      } catch (_) {
+        // Not available; rely on the scan.
+      }
+    }
+    if (mounted) setState(() => _known = known);
+  }
+
+  /// Scan results merged with known bulbs, strongest signal first.
+  List<_Bulb> get _bulbs {
+    final byId = {for (final k in _known) k.device.remoteId: k};
+    for (final r in _results) {
+      byId[r.device.remoteId] = _Bulb(
+        r.device,
+        _nameOf([r.advertisementData.advName, r.device.platformName]),
+        rssi: r.rssi,
+        status: byId[r.device.remoteId]?.status,
+      );
+    }
+    return byId.values.toList()
+      ..sort((a, b) => (b.rssi ?? -1000).compareTo(a.rssi ?? -1000));
+  }
+
+  Future<void> _open(_Bulb bulb) async {
     await FlutterBluePlus.stopScan();
     if (!mounted) return;
     await Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => LightPage(device: r.device)),
+      MaterialPageRoute<void>(builder: (_) => LightPage(device: bulb.device)),
     );
   }
 
@@ -130,27 +183,32 @@ class _ScanPageState extends State<ScanPage> {
       );
     }
     if (!adapterOn) return _adapterMessage();
-    if (_results.isEmpty) {
+    final bulbs = _bulbs;
+    if (bulbs.isEmpty) {
       return _Message(
         icon: Icons.lightbulb_outline,
         text: _scanning ? 'Looking for Hue lights…' : 'No Hue lights found.',
         hint:
-            'Bulb powered on? If it was set up with the Hue Bluetooth '
-            'app, reset it there first so it accepts a new pairing.',
+            'Bulb powered on and nearby? Bulbs set up in the Hue app on '
+            'this phone work here as they are. For a bulb set up on '
+            'another phone, make it discoverable in the Hue app there '
+            'first ($hueAppDiscoverablePath). No reset needed: the Hue '
+            'app keeps working.',
       );
     }
     return RefreshIndicator(
       onRefresh: _startScan,
       child: ListView.builder(
-        itemCount: _results.length,
+        itemCount: bulbs.length,
         itemBuilder: (context, i) {
-          final r = _results[i];
+          final b = bulbs[i];
+          final id = b.device.remoteId.str;
           return ListTile(
             leading: const Icon(Icons.lightbulb),
-            title: Text(_nameOf(r)),
-            subtitle: Text(r.device.remoteId.str),
-            trailing: Text('${r.rssi} dBm'),
-            onTap: () => _open(r),
+            title: Text(b.name),
+            subtitle: Text(b.status == null ? id : '${b.status} · $id'),
+            trailing: b.rssi == null ? null : Text('${b.rssi} dBm'),
+            onTap: () => _open(b),
           );
         },
       ),
@@ -183,6 +241,20 @@ class _ScanPageState extends State<ScanPage> {
         );
     }
   }
+}
+
+/// A row in the bulb list.
+class _Bulb {
+  const _Bulb(this.device, this.name, {this.rssi, this.status});
+
+  final BluetoothDevice device;
+  final String name;
+
+  /// Signal strength, when the bulb was seen in the current scan.
+  final int? rssi;
+
+  /// "Connected" or "Paired" for bulbs the phone already knows.
+  final String? status;
 }
 
 class _Message extends StatelessWidget {

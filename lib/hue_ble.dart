@@ -43,6 +43,12 @@ abstract final class HueUuids {
 const int minBrightness = 1;
 const int maxBrightness = 254;
 
+/// Where the Philips Hue app lets a bulb that is already set up accept a
+/// pairing from one more device, without a reset (so the Hue app keeps
+/// working). Menu names vary between Hue app versions.
+const hueAppDiscoverablePath =
+    'Settings → Voice assistants → Amazon Alexa → Make discoverable';
+
 // ---------------------------------------------------------------------------
 // Pure encode / decode functions.
 
@@ -90,10 +96,10 @@ XyColor? decodeXy(List<int> value) {
 String decodeString(List<int> value) =>
     utf8.decode(value, allowMalformed: true).replaceAll('\u0000', '').trim();
 
-/// Whether an advertisement looks like a Hue Bluetooth bulb: it advertises
-/// the Signify `fe0f` service, or one of its names contains "hue".
+/// Whether a device looks like a Hue Bluetooth bulb: it advertises the
+/// Signify `fe0f` service, or one of its names contains "hue".
 bool looksLikeHueBulb({
-  required Iterable<Guid> serviceUuids,
+  Iterable<Guid> serviceUuids = const [],
   Iterable<Guid> serviceDataUuids = const [],
   Iterable<String> names = const [],
 }) {

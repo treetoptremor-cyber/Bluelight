@@ -141,6 +141,12 @@ void main() {
       expect(looksLikeHueBulb(serviceUuids: [], names: ['', 'my HUE']), isTrue);
     });
 
+    test('works from names alone (paired / connected devices)', () {
+      expect(looksLikeHueBulb(names: ['Hue white lamp']), isTrue);
+      expect(looksLikeHueBulb(names: ['JBL Flip 5']), isFalse);
+      expect(looksLikeHueBulb(), isFalse);
+    });
+
     test('rejects other devices', () {
       expect(
         looksLikeHueBulb(

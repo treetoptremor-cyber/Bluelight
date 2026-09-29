@@ -45,39 +45,69 @@ identifier to something unique.
 
 ### Android
 
-Android 7.0 (API 24, Flutter's default minimum) or newer with Bluetooth LE. On Android 12+ the app asks
-for the "Nearby devices" permission the first time it scans; on older versions
-it asks for location, which Android requires for Bluetooth scanning.
+Android 7.0 (API 24, Flutter's default minimum) or newer with Bluetooth LE.
+On Android 12+ the app asks for the "Nearby devices" permission the first time
+it scans; on older versions it asks for location, which Android requires for
+Bluetooth scanning.
 
-## Pairing a bulb
+## Pairing a bulb (and keeping the Hue app working)
 
 The bulb's control characteristics are encrypted, so the phone has to be
-**bonded** (paired) with the bulb.
+**paired** (bonded) with the bulb. Pairing belongs to the phone, not to an
+app, and a bulb can be paired with several devices at once. **Never reset a
+bulb to use it with this app**: a reset wipes all of its pairings and removes
+it from the Hue app.
 
-1. **If the bulb was set up in the official Hue Bluetooth app**, reset it from
-   that app first (Settings → the bulb → Reset). A bulb only accepts a new
-   pairing after a reset. Brand-new bulbs accept one out of the box.
-2. Power the bulb on and open Hue BLE Remote with Bluetooth on. The bulb
-   should appear in the list within about 15 seconds.
-3. Tap the bulb. Accept the **pairing prompt** the phone shows (on iOS it
-   appears when the app first reads the bulb; on Android right after
-   connecting).
-4. The controls appear with the bulb's current state. Later connections reuse
-   the pairing, so there is no prompt.
+**Bulb set up in the Hue app on this same phone.** Nothing to do. The phone is
+already paired, so Hue BLE Remote uses the same pairing and both apps keep
+working. There is no pairing prompt.
+
+**Bulb set up in the Hue app on another phone.** Let the bulb accept one more
+pairing, without a reset:
+
+1. On the phone with the Hue app, open the Philips Hue app (or the older Hue
+   Bluetooth app) and go to **Settings → Voice assistants → Amazon Alexa →
+   Make discoverable** (Home Assistant's `hue_ble` docs also list
+   **Google Home → Make discoverable**). The bulb accepts new pairings for a
+   few minutes. Menu names vary between Hue app versions.
+2. On your phone, open Hue BLE Remote, tap the bulb, and accept the
+   **pairing prompt**.
+3. The bulb keeps working in the Hue app on the other phone.
+
+**Brand-new bulb.** It accepts a pairing out of the box: tap it and accept the
+prompt.
+
+In all cases:
+
+- Power the bulb on and open Hue BLE Remote with Bluetooth on. The bulb should
+  appear within about 15 seconds. Bulbs the phone is already connected to
+  (for example by the Hue app) or paired with are listed too, marked
+  **Connected** or **Paired**, even if they are not advertising.
+- The pairing prompt appears on iOS when the app first reads the bulb, and on
+  Android right after connecting. Later connections reuse the pairing.
+
+### Sharing the bulb with the Hue app
+
+A bulb may accept only one Bluetooth connection at a time. To avoid locking
+the Hue app out, Hue BLE Remote disconnects as soon as you leave the bulb's
+screen or switch to another app, and reconnects when you come back. On the
+same phone both apps share one connection, so there is no conflict.
 
 ## Troubleshooting
 
-- **Bulb not listed**: power-cycle it (off at the wall for 5 seconds, then on)
-  and scan again. Keep the phone within a few metres. If it is paired with
-  another phone or the Hue app, reset it there first.
-- **Pairing fails, or the prompt never appears**: reset the bulb in the Hue
-  Bluetooth app, then forget it in the phone's Bluetooth settings, and try
-  again.
-- **"Insufficient authentication" / "insufficient encryption" errors**: the
-  bond was not established. Same fix as above: reset the bulb, forget it in
-  the phone's Bluetooth settings, and pair again.
-- **Controls stop responding**: the bulb disconnected (out of range or power
-  cut). Tap **Reconnect**.
+- **Bulb not listed**: make sure it is powered and within a few metres, then
+  scan again. If the Hue app on *another* phone is open and connected to the
+  bulb, close it there; the bulb may not advertise while connected. If that
+  doesn't help, power-cycle the bulb (off at the wall for 5 seconds, then on).
+- **Pairing fails, the prompt never appears, or "insufficient
+  authentication" / "insufficient encryption" errors**: the bulb didn't accept
+  a pairing from this phone. Make it discoverable in the Hue app on the phone
+  it is set up with (see above) and tap **Retry** within a few minutes. If
+  this phone has an old pairing for the bulb in its Bluetooth settings, forget
+  that entry first. Resetting the bulb also works, but it removes the bulb
+  from the Hue app, so treat it as a last resort.
+- **Controls stop responding**: the bulb disconnected (out of range, power
+  cut, or another phone took the connection). Tap **Reconnect**.
 
 ## Protocol
 

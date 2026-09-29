@@ -36,6 +36,11 @@ class _LightPageState extends State<LightPage> {
   late final HueLight _light = HueLight(widget.device);
   late final StreamSubscription<HueLightState> _stateSub;
   late final StreamSubscription<BluetoothConnectionState> _connectionSub;
+  late final AppLifecycleListener _lifecycle;
+
+  /// Set when we disconnected because the app went to the background, so we
+  /// reconnect on resume.
+  bool _releasedInBackground = false;
 
   late final _brightness = _SliderControl(_showWriteError);
   late final _temperature = _SliderControl(_showWriteError);
@@ -64,6 +69,20 @@ class _LightPageState extends State<LightPage> {
         setState(() => _phase = _Phase.disconnected);
       }
     });
+    // Don't hold the bulb while we're not on screen: a bulb may accept only
+    // one connection, and the Hue app (e.g. on another phone) needs it too.
+    _lifecycle = AppLifecycleListener(
+      onPause: () {
+        if (_phase != _Phase.ready) return;
+        _releasedInBackground = true;
+        _light.disconnect().catchError((Object _) {});
+      },
+      onResume: () {
+        if (!_releasedInBackground) return;
+        _releasedInBackground = false;
+        _connect();
+      },
+    );
     _connect();
   }
 
@@ -72,6 +91,7 @@ class _LightPageState extends State<LightPage> {
     for (final c in [_brightness, _temperature, _color]) {
       c.writer.close();
     }
+    _lifecycle.dispose();
     _stateSub.cancel();
     _connectionSub.cancel();
     _light.dispose();
@@ -137,10 +157,15 @@ class _LightPageState extends State<LightPage> {
         ? (e.description ?? 'Bluetooth error ${e.code}')
         : e.toString();
     final lower = text.toLowerCase();
-    if (lower.contains('authentication') || lower.contains('encryption')) {
-      return '$text\n\nThe phone is not paired with this bulb. If it was set '
-          'up in the Hue Bluetooth app, reset it there, forget it in the '
-          "phone's Bluetooth settings, then try again.";
+    final pairingFailed =
+        (e is FlutterBluePlusException && e.function == 'createBond') ||
+        lower.contains('authentication') ||
+        lower.contains('encryption');
+    if (pairingFailed) {
+      return '$text\n\nThe bulb did not accept pairing with this phone. If it '
+          'is set up in the Hue app on another phone, make it discoverable '
+          'there ($hueAppDiscoverablePath), then tap Retry within a few '
+          'minutes. No reset needed: the Hue app keeps working.';
     }
     return text;
   }

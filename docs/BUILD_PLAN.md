@@ -42,6 +42,7 @@ Notes:
 - The control characteristics are **encrypted**: the phone must be bonded with the bulb.
   - Android: call `device.createBond()` right after `connect()` (Android only; guard with `Platform.isAndroid`).
   - iOS: the OS shows the pairing prompt automatically on the first read of an encrypted characteristic. Show a status line telling the user to accept it.
+- **Superseded (2026-09-29, user requirement): bulbs must keep working in the Hue app, so never tell users to reset a bulb.** Same phone: the OS pairing is shared, no action needed. Other phone: make the bulb discoverable in the Hue app (Settings → Voice assistants → Amazon Alexa → Make discoverable). The app also lists already-connected/paired bulbs and releases the connection when backgrounded. See README "Pairing a bulb". Original note, kept for history:
 - A bulb already set up in the official Hue Bluetooth app must be **reset from that app** (Settings → the bulb → Reset) before another phone can bond to it. New bulbs accept a bond out of the box. Put this in the README and in the scan page's empty-state hint.
 
 ## Colour math (Philips' documented conversion, put in `lib/color_utils.dart`)
