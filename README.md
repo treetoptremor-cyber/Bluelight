@@ -3,9 +3,31 @@
 A small Flutter app for iPhone and Android that controls **Philips Hue Bluetooth
 bulbs directly over Bluetooth Low Energy**, with no Hue Bridge and no account.
 
-It does four things: find nearby Hue bulbs, pair with one, and control its
-power, brightness, white colour temperature and colour. There are no scenes,
-groups, schedules or accounts.
+## What it does
+
+- **Dashboard**: your groups and lights by name, each with a power switch.
+  Details (connection status, model, what it supports, groups, Bluetooth ID,
+  rename, remove) sit behind the **(i)** button. Tap a row for its controls.
+- **Controls**: power, brightness, white colour temperature and colour, with
+  thick gradient sliders that follow your finger and update the light about
+  25 times a second. Moving a slider while the light is off turns it on.
+- **Groups**: control several lights together. A light can be in several
+  groups.
+- **Presets**: "Save current look" stores each light's exact state (on/off,
+  brightness, white or colour). Tap to apply; long-press to rename, update or
+  delete.
+- **Sleep timer**: dims slowly, then turns off (5–60 minutes).
+- **Routines**: at a time on chosen days, turn lights on or off or apply a
+  preset, optionally fading in or out over several minutes.
+
+Everything is stored on the phone; there is no account.
+
+### Routines run while the app is open
+
+iOS pauses apps in the background, so a routine (and the sleep timer) only
+runs while Hue BLE Remote is on screen. Making them run with the app closed
+would need either iOS Shortcuts automations (native App Intents code) or the
+bulbs' own timers, whose Bluetooth protocol isn't publicly documented.
 
 ## Supported bulbs
 
@@ -88,10 +110,11 @@ In all cases:
 
 ### Sharing the bulb with the Hue app
 
-A bulb may accept only one Bluetooth connection at a time. To avoid locking
-the Hue app out, Hue BLE Remote disconnects as soon as you leave the bulb's
-screen or switch to another app, and reconnects when you come back. On the
-same phone both apps share one connection, so there is no conflict.
+A bulb may accept only one Bluetooth connection at a time. While Hue BLE
+Remote is on screen it keeps your saved lights connected; as soon as you
+switch to another app it lets go of all of them, so the Hue app can connect,
+and it reconnects when you come back. On the same phone both apps share one
+connection, so there is no conflict.
 
 ## Troubleshooting
 
@@ -107,7 +130,8 @@ same phone both apps share one connection, so there is no conflict.
   that entry first. Resetting the bulb also works, but it removes the bulb
   from the Hue app, so treat it as a last resort.
 - **Controls stop responding**: the bulb disconnected (out of range, power
-  cut, or another phone took the connection). Tap **Reconnect**.
+  cut, or another phone took the connection). The app keeps trying on its
+  own; the light's (i) shows the status and has **Retry now**.
 
 ## Protocol
 
@@ -139,12 +163,16 @@ Wide RGB D65 formulas (`lib/color_utils.dart`).
 ## Project layout
 
 ```
-lib/main.dart          App entry point and theme
-lib/scan_page.dart     Scan for Hue bulbs and list them
-lib/light_page.dart    Connect to one bulb and show its controls
-lib/hue_ble.dart       Protocol UUIDs, value encoding, HueLight wrapper
-lib/color_utils.dart   RGB <-> xy and kelvin <-> mireds conversions
-test/                  Unit tests for the encoding and colour maths
+lib/main.dart            App entry point and theme
+lib/hue_ble.dart         Protocol UUIDs, value encoding, HueLight wrapper
+lib/color_utils.dart     RGB <-> xy and kelvin <-> mireds conversions
+lib/paced_value.dart     Paces slider writes and holds the thumb steady
+lib/hub.dart             Keeps saved lights connected; group, preset, fade ops
+lib/models.dart          Lights, groups, presets, routines (+ JSON)
+lib/store.dart           Saves them on the phone
+lib/routine_runner.dart  Runs routines at their times while the app is open
+lib/ui/                  Dashboard, controls, add lights, groups, routines
+test/                    Unit and widget tests
 ```
 
 Run the tests with `flutter test`.

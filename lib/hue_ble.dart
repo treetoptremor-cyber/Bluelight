@@ -8,6 +8,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform;
+import 'dart:math' as math;
 
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
@@ -110,19 +111,26 @@ bool looksLikeHueBulb({
 
 // ---------------------------------------------------------------------------
 
+/// Whether the bulb is showing a white colour temperature or an xy colour.
+enum HueMode { white, color }
+
 /// Snapshot of a bulb's state. [mireds] and [xy] are null when the bulb does
-/// not support them (or they have not been read yet).
+/// not support them (or they have not been read yet). [mode] is our best
+/// guess at which of the two the bulb is showing: the bulb doesn't report
+/// it, so it follows whichever was written or reported last.
 class HueLightState {
   final bool on;
   final int brightness;
   final int? mireds;
   final XyColor? xy;
+  final HueMode? mode;
 
   const HueLightState({
     this.on = false,
     this.brightness = maxBrightness,
     this.mireds,
     this.xy,
+    this.mode,
   });
 
   HueLightState copyWith({
@@ -130,11 +138,13 @@ class HueLightState {
     int? brightness,
     int? mireds,
     XyColor? xy,
+    HueMode? mode,
   }) => HueLightState(
     on: on ?? this.on,
     brightness: brightness ?? this.brightness,
     mireds: mireds ?? this.mireds,
     xy: xy ?? this.xy,
+    mode: mode ?? this.mode,
   );
 
   @override
@@ -143,14 +153,74 @@ class HueLightState {
       other.on == on &&
       other.brightness == brightness &&
       other.mireds == mireds &&
-      other.xy == xy;
+      other.xy == xy &&
+      other.mode == mode;
 
   @override
-  int get hashCode => Object.hash(on, brightness, mireds, xy);
+  int get hashCode => Object.hash(on, brightness, mireds, xy, mode);
 
   @override
   String toString() =>
-      'HueLightState(on: $on, brightness: $brightness, mireds: $mireds, xy: $xy)';
+      'HueLightState(on: $on, brightness: $brightness, mireds: $mireds, '
+      'xy: $xy, mode: $mode)';
+}
+
+/// Guess the mode from a freshly read xy: a clearly saturated colour means
+/// colour mode; anything near white is treated as white mode.
+HueMode guessMode(XyColor? xy) {
+  if (xy == null) return HueMode.white;
+  final rgb = xyToRgb(xy.x, xy.y);
+  final hi = math.max(rgb.r, math.max(rgb.g, rgb.b));
+  final lo = math.min(rgb.r, math.min(rgb.g, rgb.b));
+  final saturation = hi <= 0 ? 0.0 : (hi - lo) / hi;
+  return saturation > 0.35 ? HueMode.color : HueMode.white;
+}
+
+/// Thrown by [HueLight.connect] when its [CancelToken] is cancelled.
+class ConnectCancelled implements Exception {
+  @override
+  String toString() => 'Connection cancelled';
+}
+
+/// Lets the caller abandon a [HueLight.connect] that is waiting for the bulb.
+class CancelToken {
+  final _done = Completer<void>();
+
+  bool get isCancelled => _done.isCompleted;
+  Future<void> get whenCancelled => _done.future;
+
+  void cancel() {
+    if (!_done.isCompleted) _done.complete();
+  }
+
+  void check() {
+    if (isCancelled) throw ConnectCancelled();
+  }
+}
+
+/// A user-facing explanation of a Bluetooth error, with pairing advice
+/// that never involves resetting the bulb (it must keep working in the Hue
+/// app).
+String describeBleError(Object e) {
+  if (e is StateError) return e.message;
+  if (e is TimeoutException) {
+    return 'Timed out. Is the light powered on and in range?';
+  }
+  final text = e is FlutterBluePlusException
+      ? (e.description ?? 'Bluetooth error ${e.code}')
+      : e.toString();
+  final lower = text.toLowerCase();
+  final pairingFailed =
+      (e is FlutterBluePlusException && e.function == 'createBond') ||
+      lower.contains('authentication') ||
+      lower.contains('encryption');
+  if (pairingFailed) {
+    return '$text\n\nThe light did not accept pairing with this phone. If it '
+        'is set up in the Hue app on another phone, make it discoverable '
+        'there ($hueAppDiscoverablePath), then try again within a few '
+        'minutes. No reset needed: the Hue app keeps working.';
+  }
+  return text;
 }
 
 /// A Hue Bluetooth bulb, wrapping a [BluetoothDevice].
@@ -187,15 +257,65 @@ class HueLight {
     return 'Hue light';
   }
 
-  /// Connects, bonds (Android), discovers the light service, reads the
-  /// current state and subscribes to notifications.
-  Future<void> connect({void Function(String status)? onStatus}) async {
+  /// How long a bulb keeps reporting brightness while it fades after being
+  /// switched on or off. Brightness reports in this window are ignored and
+  /// brightness is read once afterwards.
+  static const _fadeTime = Duration(milliseconds: 1500);
+
+  final _quietUntil = <Guid, DateTime>{};
+  Timer? _fadeTimer;
+  Future<void>? _details;
+
+  /// Completes once notifications are on and the bulb's name has been read,
+  /// which [connect] leaves running in the background.
+  Future<void> get details => _details ?? Future<void>.value();
+
+  /// Connects, bonds (Android), discovers the light service and reads the
+  /// current state. The controls can be shown as soon as this returns;
+  /// notifications and the bulb's name follow in the background ([details]).
+  ///
+  /// With [background], the connection request returns at once and the
+  /// phone connects whenever the bulb is in range, for as long as it takes.
+  /// flutter_blue_plus runs every Bluetooth operation behind one global
+  /// lock, and a normal connect holds it until it succeeds or times out, so
+  /// one unplugged bulb would stall every other light. Cancel the wait with
+  /// [cancel].
+  Future<void> connect({
+    void Function(String status)? onStatus,
+    bool background = false,
+    CancelToken? cancel,
+  }) async {
     void status(String s) => onStatus?.call(s);
+    final token = cancel ?? CancelToken();
 
     await _cancelSubscriptions();
 
+    if (FlutterBluePlus.adapterStateNow != BluetoothAdapterState.on) {
+      status('Waiting for Bluetooth…');
+      try {
+        await FlutterBluePlus.adapterState
+            .firstWhere((s) => s == BluetoothAdapterState.on)
+            .timeout(const Duration(seconds: 5));
+      } on TimeoutException {
+        throw StateError('Bluetooth is off. Turn it on and try again.');
+      }
+    }
+
     status('Connecting…');
-    await device.connect(timeout: const Duration(seconds: 20));
+    // No MTU request: every Hue value fits in 4 bytes, and asking costs a
+    // round trip on Android.
+    if (background) {
+      await device.connect(autoConnect: true, mtu: null);
+      await Future.any([
+        device.connectionState.firstWhere(
+          (s) => s == BluetoothConnectionState.connected,
+        ),
+        token.whenCancelled,
+      ]);
+    } else {
+      await device.connect(timeout: const Duration(seconds: 12), mtu: null);
+    }
+    token.check();
 
     if (Platform.isAndroid) {
       status('Pairing… accept the pairing request if Android asks.');
@@ -203,7 +323,10 @@ class HueLight {
     }
 
     status('Discovering services…');
-    final services = await device.discoverServices();
+    final services = await device.discoverServices(
+      subscribeToServicesChanged: false,
+    );
+    token.check();
     final light = services
         .where((s) => s.serviceUuid == HueUuids.lightService)
         .firstOrNull;
@@ -235,12 +358,15 @@ class HueLight {
           ? 'Reading light state… if iOS asks to pair, tap Pair.'
           : 'Reading light state…',
     );
-    await _power!.read(timeout: 60);
-    await refresh();
+    await _readState(firstTimeout: 60);
+    token.check();
 
-    await _readInfo(services);
+    _details = _subscribeAndReadInfo(services);
+  }
 
-    status('Subscribing to changes…');
+  /// Turns on notifications (power and brightness first, as they change
+  /// most), then reads the name. Never throws: both are nice to have.
+  Future<void> _subscribeAndReadInfo(List<BluetoothService> services) async {
     for (final c in [_power, _brightness, _temperature, _color].nonNulls) {
       final sub = c.onValueReceived.listen((v) => _onValue(c, v));
       device.cancelWhenDisconnected(sub);
@@ -248,9 +374,11 @@ class HueLight {
       try {
         await c.setNotifyValue(true);
       } catch (_) {
-        // Notifications are nice to have; the controls still work without.
+        // The controls still work without notifications.
       }
     }
+    await _readInfo(services);
+    _emit(_state); // so listeners pick up the name
   }
 
   Future<void> _readInfo(List<BluetoothService> services) async {
@@ -275,15 +403,17 @@ class HueLight {
 
   void _onValue(BluetoothCharacteristic c, List<int> value) {
     final uuid = c.characteristicUuid;
+    final quiet = _quietUntil[uuid];
+    if (quiet != null && DateTime.now().isBefore(quiet)) return;
     var s = _state;
     if (uuid == HueUuids.power) {
       s = s.copyWith(on: decodePower(value));
     } else if (uuid == HueUuids.brightness) {
       s = s.copyWith(brightness: decodeBrightness(value));
     } else if (uuid == HueUuids.temperature) {
-      s = s.copyWith(mireds: decodeMireds(value));
+      s = s.copyWith(mireds: decodeMireds(value), mode: HueMode.white);
     } else if (uuid == HueUuids.color) {
-      s = s.copyWith(xy: decodeXy(value));
+      s = s.copyWith(xy: decodeXy(value), mode: HueMode.color);
     }
     _emit(s);
   }
@@ -298,11 +428,21 @@ class HueLight {
     return c;
   }
 
-  /// Reads every present characteristic and emits the combined state.
-  Future<void> refresh() async {
-    var s = _state;
-    s = s.copyWith(
-      on: decodePower(await _require(_power, 'power').read()),
+  /// Writes with response, or without when [fast] and the bulb allows it.
+  Future<void> _write(
+    BluetoothCharacteristic c,
+    List<int> value, {
+    bool fast = false,
+  }) => c.write(
+    value,
+    withoutResponse: fast && c.properties.writeWithoutResponse,
+  );
+
+  Future<void> _readState({int firstTimeout = 15}) async {
+    var s = _state.copyWith(
+      on: decodePower(
+        await _require(_power, 'power').read(timeout: firstTimeout),
+      ),
       brightness: decodeBrightness(
         await _require(_brightness, 'brightness').read(),
       ),
@@ -313,33 +453,64 @@ class HueLight {
     if (_color case final c?) {
       s = s.copyWith(xy: decodeXy(await c.read()));
     }
+    if (s.mode == null) {
+      s = s.copyWith(mode: _color == null ? HueMode.white : guessMode(s.xy));
+    }
     _emit(s);
   }
 
+  /// Reads every present characteristic and emits the combined state.
+  Future<void> refresh() => _readState();
+
   Future<void> setPower(bool on) async {
-    await _require(_power, 'power').write(encodePower(on));
+    await _write(_require(_power, 'power'), encodePower(on));
     _emit(_state.copyWith(on: on));
+    // The bulb fades, reporting brightness along the way. Ignore that and
+    // read the real value once the fade is over.
+    _quietUntil[HueUuids.brightness] = DateTime.now().add(_fadeTime);
+    _fadeTimer?.cancel();
+    _fadeTimer = Timer(_fadeTime, _resyncBrightness);
   }
 
-  Future<void> setBrightness(int brightness) async {
+  Future<void> _resyncBrightness() async {
+    final c = _brightness;
+    if (c == null || !device.isConnected) return;
+    try {
+      final b = decodeBrightness(await c.read());
+      _emit(_state.copyWith(brightness: b));
+    } catch (_) {
+      // Next notification will catch up.
+    }
+  }
+
+  Future<void> setBrightness(int brightness, {bool fast = false}) async {
     final b = brightness.clamp(minBrightness, maxBrightness);
-    await _require(_brightness, 'brightness').write(encodeBrightness(b));
+    await _write(
+      _require(_brightness, 'brightness'),
+      encodeBrightness(b),
+      fast: fast,
+    );
     _emit(_state.copyWith(brightness: b));
   }
 
-  Future<void> setTemperature(int mireds) async {
+  Future<void> setTemperature(int mireds, {bool fast = false}) async {
     final m = mireds.clamp(minMireds, maxMireds);
-    await _require(_temperature, 'colour temperature').write(encodeMireds(m));
-    _emit(_state.copyWith(mireds: m));
+    await _write(
+      _require(_temperature, 'colour temperature'),
+      encodeMireds(m),
+      fast: fast,
+    );
+    _emit(_state.copyWith(mireds: m, mode: HueMode.white));
   }
 
-  Future<void> setColor(double x, double y) async {
-    await _require(_color, 'colour').write(encodeXy(x, y));
+  Future<void> setColor(double x, double y, {bool fast = false}) async {
+    await _write(_require(_color, 'colour'), encodeXy(x, y), fast: fast);
     // Report what the bulb actually stores after 16-bit quantisation.
-    _emit(_state.copyWith(xy: decodeXy(encodeXy(x, y))));
+    _emit(_state.copyWith(xy: decodeXy(encodeXy(x, y)), mode: HueMode.color));
   }
 
   Future<void> disconnect() async {
+    _fadeTimer?.cancel();
     await _cancelSubscriptions();
     await device.disconnect();
   }
@@ -354,6 +525,7 @@ class HueLight {
 
   /// Cancels subscriptions, closes [stateStream] and disconnects.
   Future<void> dispose() async {
+    _fadeTimer?.cancel();
     await _cancelSubscriptions();
     await _stateController.close();
     try {
