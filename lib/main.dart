@@ -1,6 +1,8 @@
 import 'package:flutter/cupertino.dart' show CupertinoPageTransitionsBuilder;
 import 'package:flutter/material.dart';
 
+import 'bulb_scheduler.dart';
+import 'diagnostics.dart';
 import 'hub.dart';
 import 'routine_runner.dart';
 import 'store.dart';
@@ -9,11 +11,19 @@ import 'ui/dashboard_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Diagnostics.instance.init();
   final store = await AppStore.load();
   final hub = HueHub(store);
-  final runner = RoutineRunner(store, hub);
+  final scheduler = BulbScheduler(store, hub);
+  final runner = RoutineRunner(store, hub, scheduler: scheduler);
   runApp(
-    AppScope(store: store, hub: hub, runner: runner, child: const HueBleApp()),
+    AppScope(
+      store: store,
+      hub: hub,
+      runner: runner,
+      scheduler: scheduler,
+      child: const HueBleApp(),
+    ),
   );
 }
 

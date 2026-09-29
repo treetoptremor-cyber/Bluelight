@@ -9,11 +9,21 @@ import '../paced_value.dart';
 import '../store.dart';
 import 'common.dart';
 import 'info_sheets.dart';
+import 'scenes_page.dart';
+import '../scenes_data.dart';
 
-const _minKelvin = 2000.0;
+/// 2200 K, the warmest white every Hue bulb accepts (some stop there).
+const _minKelvin = 2200.0;
 const _maxKelvin = 6500.0;
 
 typedef HueSat = ({double hue, double sat});
+
+/// White-balance notches on the White slider.
+const _whiteNotches = <(String, double)>[
+  ('Candle', 2200), // candlelight, a cosy restaurant
+  ('Warm indoor', 2700),
+  ('Daylight', 5500),
+];
 
 const _swatches = <Color>[
   Color(0xFFFF2A00),
@@ -392,6 +402,7 @@ class _TargetPageState extends State<TargetPage> {
                       min: _minKelvin,
                       max: _maxKelvin,
                       gradient: warmToCool,
+                      ticks: [for (final (_, v) in _whiteNotches) v],
                       dragging: _kelvin.dragging,
                       onChangeStart: (v) {
                         HapticFeedback.selectionClick();
@@ -401,12 +412,27 @@ class _TargetPageState extends State<TargetPage> {
                       onChanged: _kelvin.update,
                       onChangeEnd: _kelvin.end,
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 10),
                     Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text('Warm', style: theme.textTheme.bodySmall),
-                        Text('Cool', style: theme.textTheme.bodySmall),
+                        for (final (label, v) in _whiteNotches)
+                          Expanded(
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 3,
+                              ),
+                              child: _NotchButton(
+                                label: label,
+                                color: kelvinColor(v),
+                                selected: (k - v).abs() < 60,
+                                onTap: () {
+                                  HapticFeedback.selectionClick();
+                                  _ensureOn();
+                                  _kelvin.set(v);
+                                },
+                              ),
+                            ),
+                          ),
                       ],
                     ),
                   ],
@@ -477,6 +503,37 @@ class _TargetPageState extends State<TargetPage> {
               );
             },
           ),
+        ControlCard(
+          title: 'Scenes',
+          trailing: TextButton(
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => ScenesPage(targetId: widget.targetId),
+              ),
+            ),
+            child: Text('Browse all ${hueScenes.length}'),
+          ),
+          child: SizedBox(
+            height: 64,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              children: [
+                for (final scene in hueScenes.where((s) => s.set == 'Defaults'))
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: SizedBox(
+                      width: 104,
+                      child: SceneTile(
+                        scene: scene,
+                        onTap: () =>
+                            applyScene(context, widget.targetId, scene),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
         ControlCard(
           title: 'Presets',
           child: Wrap(
@@ -581,6 +638,55 @@ class _PowerTile extends StatelessWidget {
                 ),
               ),
               Switch(value: on, onChanged: onChanged),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _NotchButton extends StatelessWidget {
+  const _NotchButton({
+    required this.label,
+    required this.color,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final Color color;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: selected ? scheme.secondaryContainer : scheme.surfaceContainerHigh,
+      shape: StadiumBorder(
+        side: BorderSide(
+          color: selected ? scheme.secondary : scheme.outlineVariant,
+        ),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 6),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              LightDot(color: color, on: true, size: 12),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelMedium,
+                ),
+              ),
             ],
           ),
         ),

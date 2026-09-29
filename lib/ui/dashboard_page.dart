@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../hub.dart';
 import 'add_lights_page.dart';
 import 'common.dart';
+import 'diagnostics_page.dart';
 import 'group_edit_page.dart';
 import 'info_sheets.dart';
 import 'routines_page.dart';
@@ -35,6 +36,19 @@ class DashboardPage extends StatelessWidget {
                 tooltip: 'Add lights',
                 icon: const Icon(Icons.add),
                 onPressed: () => _push(context, const AddLightsPage()),
+              ),
+              PopupMenuButton<String>(
+                onSelected: (v) {
+                  if (v == 'diagnostics') {
+                    _push(context, const DiagnosticsPage());
+                  }
+                },
+                itemBuilder: (context) => const [
+                  PopupMenuItem(
+                    value: 'diagnostics',
+                    child: Text('Diagnostics'),
+                  ),
+                ],
               ),
             ],
           ),

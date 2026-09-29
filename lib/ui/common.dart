@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
+import '../bulb_scheduler.dart';
 import '../color_utils.dart';
+import '../diagnostics.dart';
 import '../hub.dart';
 import '../hue_ble.dart';
 import '../models.dart';
@@ -14,12 +17,16 @@ class AppScope extends InheritedWidget {
     required this.store,
     required this.hub,
     required this.runner,
+    this.scheduler,
     required super.child,
   });
 
   final AppStore store;
   final HueHub hub;
   final RoutineRunner runner;
+
+  /// Null in tests.
+  final BulbScheduler? scheduler;
 
   static AppScope of(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<AppScope>()!;
@@ -171,7 +178,11 @@ class LightDot extends StatelessWidget {
 
 /// A thick, rounded slider painted with [gradient], iOS style. When the
 /// value changes from outside (not while dragging) the thumb glides there.
-class FatSlider extends StatelessWidget {
+///
+/// [ticks] are marked on the track; while dragging, the thumb snaps to a
+/// tick when it comes within [snap] (a fraction of the range) with a light
+/// haptic tap, and a release near one lands exactly on it.
+class FatSlider extends StatefulWidget {
   const FatSlider({
     super.key,
     required this.value,
@@ -184,6 +195,8 @@ class FatSlider extends StatelessWidget {
     required this.onChangeEnd,
     this.enabled = true,
     this.semanticLabel,
+    this.ticks = const [],
+    this.snap = 0.025,
   });
 
   final double value;
@@ -196,41 +209,76 @@ class FatSlider extends StatelessWidget {
   final ValueChanged<double> onChangeEnd;
   final bool enabled;
   final String? semanticLabel;
+  final List<double> ticks;
+  final double snap;
 
+  @override
+  State<FatSlider> createState() => _FatSliderState();
+}
+
+class _FatSliderState extends State<FatSlider> {
   static const _height = 44.0;
+  double? _snappedTo;
+
+  double _snapped(double v) {
+    final range = widget.max - widget.min;
+    for (final t in widget.ticks) {
+      if ((v - t).abs() <= widget.snap * range) {
+        if (_snappedTo != t) HapticFeedback.selectionClick();
+        _snappedTo = t;
+        return t;
+      }
+    }
+    _snappedTo = null;
+    return v;
+  }
 
   @override
   Widget build(BuildContext context) {
+    final w = widget;
     final outline = Theme.of(context).colorScheme.outlineVariant;
+    final range = w.max - w.min;
+    final tickFractions = [
+      for (final t in w.ticks)
+        if (range > 0) ((t - w.min) / range).clamp(0.0, 1.0),
+    ];
     return Semantics(
-      label: semanticLabel,
+      label: w.semanticLabel,
       child: AnimatedOpacity(
         duration: const Duration(milliseconds: 200),
-        opacity: enabled ? 1 : 0.4,
+        opacity: w.enabled ? 1 : 0.4,
         child: SizedBox(
           height: _height + 8,
           child: TweenAnimationBuilder<double>(
-            tween: Tween(end: value.clamp(min, max)),
-            duration: dragging
+            tween: Tween(end: w.value.clamp(w.min, w.max)),
+            duration: w.dragging
                 ? Duration.zero
                 : const Duration(milliseconds: 260),
             curve: Curves.easeOutCubic,
             builder: (context, v, _) => SliderTheme(
               data: SliderTheme.of(context).copyWith(
                 trackHeight: _height,
-                trackShape: _FatTrack(gradient, outline),
+                trackShape: _FatTrack(w.gradient, outline, tickFractions),
                 thumbShape: const _InsetThumb(_height / 2 - 5),
                 overlayShape: SliderComponentShape.noOverlay,
                 showValueIndicator: ShowValueIndicator.never,
                 padding: EdgeInsets.zero,
               ),
               child: Slider(
-                min: min,
-                max: max,
-                value: v.clamp(min, max),
-                onChangeStart: enabled ? onChangeStart : null,
-                onChanged: enabled ? onChanged : null,
-                onChangeEnd: enabled ? onChangeEnd : null,
+                min: w.min,
+                max: w.max,
+                value: v.clamp(w.min, w.max),
+                onChangeStart: w.enabled
+                    ? (v) => w.onChangeStart(_snapped(v))
+                    : null,
+                onChanged: w.enabled ? (v) => w.onChanged(_snapped(v)) : null,
+                onChangeEnd: w.enabled
+                    ? (v) {
+                        final end = _snapped(v);
+                        _snappedTo = null;
+                        w.onChangeEnd(end);
+                      }
+                    : null,
               ),
             ),
           ),
@@ -241,10 +289,13 @@ class FatSlider extends StatelessWidget {
 }
 
 class _FatTrack extends SliderTrackShape {
-  const _FatTrack(this.gradient, this.outline);
+  const _FatTrack(this.gradient, this.outline, [this.ticks = const []]);
 
   final Gradient gradient;
   final Color outline;
+
+  /// Tick positions as fractions of the thumb's travel.
+  final List<double> ticks;
 
   @override
   Rect getPreferredRect({
@@ -298,6 +349,21 @@ class _FatTrack extends SliderTrackShape {
           ..strokeWidth = 1
           ..color = outline,
       );
+    // Small notches along the centre line of the track.
+    final notch = Paint()
+      ..color = Colors.black.withValues(alpha: 0.28)
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    for (final f in ticks) {
+      final x = inner.left + f * inner.width;
+      context.canvas
+        ..drawLine(Offset(x, inner.top + 5), Offset(x, inner.top + 11), notch)
+        ..drawLine(
+          Offset(x, inner.bottom - 11),
+          Offset(x, inner.bottom - 5),
+          notch,
+        );
+    }
   }
 }
 
@@ -443,6 +509,7 @@ Future<bool> confirm(
     false;
 
 void showError(BuildContext context, Object error) {
+  diag('ui', 'error shown: $error');
   ScaffoldMessenger.of(context)
     ..hideCurrentSnackBar()
     ..showSnackBar(SnackBar(content: Text(describeBleError(error))));

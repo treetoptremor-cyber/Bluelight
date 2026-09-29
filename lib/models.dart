@@ -218,32 +218,57 @@ class Routine {
     minuteOfDay % 60,
   );
 
-  /// Whether the routine should run at [now]: it is enabled, scheduled
-  /// today, its time passed less than [window] ago, and it hasn't run since.
-  /// The window stops a routine from firing long after its time just
-  /// because the app was opened late.
-  bool isDue(
+  /// Fade-in routines (turn on, apply a preset) reach their look at the set
+  /// time, like the Hue app's "Wake up"; fade-out routines start then.
+  bool get fadesIn => action != RoutineAction.turnOff && fadeMinutes > 0;
+
+  /// When the routine starts acting for the occurrence at [at].
+  DateTime startFor(DateTime at) =>
+      fadesIn ? at.subtract(Duration(minutes: fadeMinutes)) : at;
+
+  /// The occurrence (set time) whose start is due at [now], if any: the
+  /// routine is enabled, the start passed less than [window] ago, and it
+  /// hasn't run since. The window stops a routine from firing long after
+  /// its time just because the app was opened late.
+  DateTime? dueOccurrence(
     DateTime now, {
     DateTime? lastRun,
     Duration window = const Duration(minutes: 2),
   }) {
-    if (!enabled || !weekdays.contains(now.weekday)) return false;
-    final at = _at(now);
-    if (now.isBefore(at) || now.difference(at) >= window) return false;
-    return lastRun == null || lastRun.isBefore(at);
-  }
-
-  /// The next time this routine is scheduled strictly after [now], or null
-  /// if it never runs.
-  DateTime? nextRun(DateTime now) {
-    if (!enabled || weekdays.isEmpty) return null;
-    for (var i = 0; i <= 7; i++) {
+    if (!enabled) return null;
+    // A fade-in can start the day before its set time (e.g. 00:10 wake-up
+    // with a 30 minute fade), so check today and tomorrow.
+    for (var i = 0; i <= 1; i++) {
       final day = DateTime(now.year, now.month, now.day + i);
       if (!weekdays.contains(day.weekday)) continue;
       final at = _at(day);
-      if (at.isAfter(now)) return at;
+      final start = startFor(at);
+      if (now.isBefore(start) || now.difference(start) >= window) continue;
+      if (lastRun == null || lastRun.isBefore(start)) return at;
     }
     return null;
+  }
+
+  bool isDue(
+    DateTime now, {
+    DateTime? lastRun,
+    Duration window = const Duration(minutes: 2),
+  }) => dueOccurrence(now, lastRun: lastRun, window: window) != null;
+
+  /// The next set time strictly after [now], or null if it never runs.
+  DateTime? nextRun(DateTime now) => upcoming(now, 1).firstOrNull;
+
+  /// The next [count] set times strictly after [now].
+  List<DateTime> upcoming(DateTime now, int count) {
+    final out = <DateTime>[];
+    if (!enabled || weekdays.isEmpty) return out;
+    for (var i = 0; i <= 7 * count + 1 && out.length < count; i++) {
+      final day = DateTime(now.year, now.month, now.day + i);
+      if (!weekdays.contains(day.weekday)) continue;
+      final at = _at(day);
+      if (at.isAfter(now)) out.add(at);
+    }
+    return out;
   }
 
   Map<String, Object?> toJson() => {

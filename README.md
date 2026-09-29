@@ -22,12 +22,14 @@ bulbs directly over Bluetooth Low Energy**, with no Hue Bridge and no account.
 
 Everything is stored on the phone; there is no account.
 
-### Routines run while the app is open
+### Routines run on the bulbs
 
-iOS pauses apps in the background, so a routine (and the sleep timer) only
-runs while Hue BLE Remote is on screen. Making them run with the app closed
-would need either iOS Shortcuts automations (native App Intents code) or the
-bulbs' own timers, whose Bluetooth protocol isn't publicly documented.
+Routines are stored on the bulbs' own schedules (with their clock set by the
+app), so they run with the app closed and the phone away. A bulb schedule runs
+once, so the app stores the next three runs of each routine and tops them up
+whenever it connects. Colour presets can't be stored on a bulb, so routines
+that apply one run only while the app is open. The sleep timer is stored on
+the bulbs too.
 
 ## Supported bulbs
 
@@ -176,3 +178,16 @@ test/                    Unit and widget tests
 ```
 
 Run the tests with `flutter test`.
+
+## Credits
+
+- Scene colours: [Hypfer/hass-scene_presets](https://github.com/Hypfer/hass-scene_presets)
+  (Apache-2.0), measured from the Hue app's scene gallery, cross-checked with
+  [nilsreiter/home-assistant-scenes](https://github.com/nilsreiter/home-assistant-scenes)
+  and [ebaauw/ph.sh](https://github.com/ebaauw/ph.sh).
+- Combined light state with fade time: [flip-dots/HueBLE](https://github.com/flip-dots/HueBLE).
+- On-bulb schedules and clock sync: captures by
+  [luigibrancati](https://gist.github.com/luigibrancati/47442f40adf6f54b17337d8dd3794e2c)
+  and the discussion in
+  [shinyquagsire23's gist](https://gist.github.com/shinyquagsire23/f7907fdf6b470200702e75a30135caf3).
+  The app never writes `97fe6561-0004`, reported to factory-reset a bulb.

@@ -4,8 +4,11 @@ import 'dart:math' as math;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
+import 'diagnostics.dart';
 import 'hue_ble.dart';
+import 'hue_protocol_ext.dart';
 import 'models.dart';
+import 'scenes.dart';
 import 'store.dart';
 
 enum LinkStatus {
@@ -80,6 +83,16 @@ class HueHub extends ChangeNotifier {
 
   static const _unreachableAfter = Duration(seconds: 10);
 
+  final _readyListeners = <void Function(String lightId)>[];
+
+  /// Called each time a light is connected and fully set up.
+  void onLightReady(void Function(String lightId) listener) =>
+      _readyListeners.add(listener);
+
+  /// Sleep timers stored on bulbs: target id -> (light id -> schedule id).
+  final _bulbSleep = <String, Map<String, int>>{};
+  final _bulbSleepEnds = <String, DateTime>{};
+
   // --- Queries
 
   LinkStatus statusOf(String lightId) =>
@@ -105,7 +118,11 @@ class HueHub extends ChangeNotifier {
   bool anyOn(Iterable<String> ids) => connected(ids).any((l) => l.state.on);
 
   /// When a fade running on [targetId] ends, or null.
-  DateTime? fadeEndsAt(String targetId) => _fades[targetId]?.endsAt;
+  DateTime? fadeEndsAt(String targetId) {
+    final bulb = _bulbSleepEnds[targetId];
+    if (bulb != null && bulb.isAfter(DateTime.now())) return bulb;
+    return _fades[targetId]?.endsAt;
+  }
 
   /// Current look of each connected light among [ids].
   Map<String, LightLook> snapshot(Iterable<String> ids) => {
@@ -136,6 +153,13 @@ class HueHub extends ChangeNotifier {
   }
 
   void _set(_Link link, LinkStatus status, {String? error}) {
+    if (link.status != status || link.error != error) {
+      diag(
+        'link',
+        '${store.nameOf(link.id)}: ${status.name}'
+            '${error == null ? '' : ' - ${error.split('\n').first}'}',
+      );
+    }
     link.status = status;
     link.error = error;
     _notify();
@@ -162,6 +186,14 @@ class HueHub extends ChangeNotifier {
         slow.cancel();
         backoff = const Duration(seconds: 2);
         _set(link, LinkStatus.connected);
+        unawaited(
+          link.light.details.then((_) {
+            if (link.token != token || _disposed) return;
+            for (final l in _readyListeners) {
+              l(link.id);
+            }
+          }),
+        );
         await Future.any([
           link.light.device.connectionState.firstWhere(
             (s) => s == BluetoothConnectionState.disconnected,
@@ -204,6 +236,7 @@ class HueHub extends ChangeNotifier {
   }
 
   void _pause() {
+    diag('app', 'background: releasing lights');
     _paused = true;
     for (final f in _fades.values) {
       f.timer?.cancel();
@@ -217,6 +250,9 @@ class HueHub extends ChangeNotifier {
   }
 
   void _resume() {
+    // iOS also reports a resume at launch; only reconnect after a pause.
+    if (!_paused) return;
+    diag('app', 'foreground: reconnecting lights');
     _paused = false;
     for (final link in _links.values) {
       _start(link);
@@ -300,26 +336,87 @@ class HueHub extends ChangeNotifier {
     return _each(looks.keys, (id, l) => _applyLook(l, looks[id]!));
   }
 
+  /// Applies [scene] across the connected lights among [ids].
+  Future<void> applyScene(Iterable<String> ids, HueScene scene) {
+    final lights = {
+      for (final id in ids)
+        if (lightOf(id) case final l? when statusOf(id) == LinkStatus.connected)
+          id: LightAbilities(
+            color: l.supportsColor,
+            white: l.supportsTemperature,
+          ),
+    };
+    return applyLooks(sceneLooks(scene, lights));
+  }
+
+  /// One combined write per light where the bulb supports it, with a short
+  /// fade so preset changes glide.
   Future<void> _applyLook(HueLight l, LightLook look) async {
+    const glide = Duration(milliseconds: 600);
     if (!look.on) {
-      if (l.state.on) await l.setPower(false);
+      await l.setLook(on: false, transition: glide);
       return;
     }
-    if (!l.state.on) await l.setPower(true);
-    if (look.mode == HueMode.color && look.xy != null && l.supportsColor) {
-      await l.setColor(look.xy!.x, look.xy!.y);
-    } else if (look.mireds != null && l.supportsTemperature) {
-      await l.setTemperature(look.mireds!);
-    }
-    await l.setBrightness(look.brightness);
+    final color =
+        look.mode == HueMode.color && look.xy != null && l.supportsColor;
+    await l.setLook(
+      on: true,
+      brightness: look.brightness,
+      xy: color ? look.xy : null,
+      mireds: !color && l.supportsTemperature ? look.mireds : null,
+      transition: glide,
+    );
   }
 
   // --- Fades
 
   /// Dims [targetId]'s lights to minimum over [duration], then turns them
   /// off. Used by the sleep timer and "turn off" routines.
-  Future<void> fadeOut(String targetId, Duration duration) async {
-    final ids = store.lightIdsFor(targetId);
+  Future<void> fadeOut(
+    String targetId,
+    Duration duration, {
+    List<String>? lightIds,
+  }) async {
+    await cancelFade(targetId);
+    final ids = lightIds ?? store.lightIdsFor(targetId);
+    final lit = [
+      for (final id in ids)
+        if (stateOf(id)?.on ?? false) id,
+    ];
+    // Prefer the bulbs' own "go to sleep" schedule: it finishes even if the
+    // app is closed.
+    final onBulb = <String, int>{};
+    if (lit.isNotEmpty &&
+        lit.every((id) => lightOf(id)!.supportsSchedules) &&
+        duration <= maxTransition) {
+      final at = DateTime.now().add(const Duration(seconds: 3));
+      for (final id in lit) {
+        try {
+          final light = lightOf(id)!;
+          await light.syncClock();
+          final sid = await light.createSchedule(
+            kind: BulbScheduleKind.sleep,
+            at: at,
+            fade: duration,
+            title: 'HBT Sleep timer',
+          );
+          if (sid != null) onBulb[id] = sid;
+        } catch (e) {
+          diag('sched', '${store.nameOf(id)}: sleep timer on bulb failed: $e');
+        }
+      }
+      if (onBulb.length == lit.length) {
+        _bulbSleep[targetId] = onBulb;
+        _bulbSleepEnds[targetId] = at.add(duration);
+        diag('sched', 'sleep timer on bulbs for ${store.nameOf(targetId)}');
+        _notify();
+        return;
+      }
+      // Partly failed: undo and fade from the app instead.
+      for (final e in onBulb.entries) {
+        lightOf(e.key)?.deleteSchedule(e.value).catchError((Object _) {});
+      }
+    }
     final lights = {for (final id in ids) id: stateOf(id)}
       ..removeWhere((_, s) => s == null || !s.on);
     if (lights.isEmpty) return;
@@ -342,8 +439,9 @@ class HueHub extends ChangeNotifier {
     String targetId,
     Duration duration, {
     Map<String, LightLook>? looks,
+    List<String>? lightIds,
   }) async {
-    final ids = store.lightIdsFor(targetId);
+    final ids = lightIds ?? store.lightIdsFor(targetId);
     final targets = <String, LightLook>{};
     for (final id in ids) {
       final look = looks?[id] ?? _onLook(id);
@@ -421,9 +519,18 @@ class HueHub extends ChangeNotifier {
     _notify();
   }
 
-  void cancelFade(String targetId) {
+  Future<void> cancelFade(String targetId) async {
     _fades.remove(targetId)?.timer?.cancel();
+    _bulbSleepEnds.remove(targetId);
+    final onBulb = _bulbSleep.remove(targetId);
     _notify();
+    for (final e in (onBulb ?? const <String, int>{}).entries) {
+      try {
+        await lightOf(e.key)?.deleteSchedule(e.value);
+      } catch (_) {
+        // Already ran or the light is gone.
+      }
+    }
   }
 
   void _cancelFadesOn(Iterable<String> lightIds) {

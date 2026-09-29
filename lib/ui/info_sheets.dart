@@ -114,6 +114,14 @@ class _LightInfo extends StatelessWidget {
                   _Row(label: 'Bulb name', child: Text(light.name)),
                 if (connected)
                   _Row(label: 'Supports', child: Text(supports.join(' · '))),
+                if (connected && light!.supportsSchedules)
+                  _Row(
+                    label: 'On the bulb',
+                    child: Text(
+                      '${AppScope.of(context).scheduler?.armedCount(id) ?? 0} '
+                      'upcoming routine runs stored',
+                    ),
+                  ),
                 _Row(
                   label: 'Groups',
                   child: Text(groups.isEmpty ? 'None' : groups.join(', ')),

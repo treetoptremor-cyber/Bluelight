@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../hue_ble.dart';
 import '../models.dart';
 import '../store.dart';
 import 'common.dart';
@@ -33,7 +34,15 @@ String _actionLabel(AppStore store, Routine r) {
   return '$what$fade';
 }
 
-/// Lists routines. They run while the app is open.
+/// Whether [r] applies a colour preset, which bulbs can't store.
+bool _needsApp(AppStore store, Routine r) {
+  if (r.action != RoutineAction.preset || r.presetId == null) return false;
+  final p = store.preset(r.presetId!);
+  return p != null &&
+      p.looks.values.any((l) => l.on && l.mode == HueMode.color);
+}
+
+/// Lists routines.
 class RoutinesPage extends StatelessWidget {
   const RoutinesPage({super.key});
 
@@ -62,11 +71,13 @@ class RoutinesPage extends StatelessWidget {
                 color: theme.colorScheme.secondaryContainer,
                 child: const ListTile(
                   leading: Icon(Icons.info_outline),
-                  title: Text('Runs while the app is open'),
+                  title: Text('Stored on your lights'),
                   subtitle: Text(
-                    'iOS pauses apps in the background, so a routine only '
-                    'runs if Hue BLE Remote is on screen at its time (and '
-                    'the lights are in range).',
+                    'Routines are saved on the bulbs themselves, so they run '
+                    'with the app closed and your phone away. Each bulb holds '
+                    'the next few runs; opening the app tops them up, so '
+                    'open it at least every couple of days. Colour presets '
+                    'can only run while the app is open.',
                   ),
                 ),
               ),
@@ -89,7 +100,8 @@ class RoutinesPage extends StatelessWidget {
                     ),
                     subtitle: Text(
                       '${_daysLabel(r.weekdays)} · ${store.nameOf(r.targetId)}\n'
-                      '${_actionLabel(store, r)}',
+                      '${_actionLabel(store, r)}'
+                      '${_needsApp(store, r) ? ' · needs the app open' : ''}',
                     ),
                     isThreeLine: true,
                     trailing: Switch(
@@ -332,8 +344,8 @@ class _RoutineEditPageState extends State<RoutineEditPage> {
             initialValue: _fade,
             decoration: InputDecoration(
               labelText: _action == RoutineAction.turnOff
-                  ? 'Fade out over'
-                  : 'Fade in over',
+                  ? 'Fade out over (starts at the set time)'
+                  : 'Fade in over (done by the set time)',
               border: const OutlineInputBorder(),
             ),
             items: [

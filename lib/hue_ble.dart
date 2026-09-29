@@ -13,6 +13,8 @@ import 'dart:math' as math;
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import 'color_utils.dart';
+import 'diagnostics.dart';
+import 'hue_protocol_ext.dart';
 
 /// GATT UUIDs used by Hue Bluetooth bulbs.
 abstract final class HueUuids {
@@ -39,7 +41,35 @@ abstract final class HueUuids {
 
   /// Standard Device Information model number string.
   static final modelNumber = Guid('00002a24-0000-1000-8000-00805f9b34fb');
+
+  /// Combined light state (TLV, with a fade time). See hue_protocol_ext.dart.
+  static final combined = Guid('932c32bd-0007-47a2-835a-a8d455b859dd');
+
+  /// On-bulb schedules (wake up / go to sleep).
+  static final schedules = Guid('9da2ddf1-0001-44d0-909c-3f3d3cb34a7b');
+
+  /// The bulb's clock: uint32 LE Unix time.
+  static final clock = Guid('97fe6561-1001-4f62-86e9-b71ee2da3d22');
+
+  /// Reported to trigger a factory reset when written. Never written: a
+  /// reset would remove the bulb from the Hue app.
+  static final neverWrite = {Guid('97fe6561-0004-4f62-86e9-b71ee2da3d22')};
 }
+
+/// 2200 K: the warmest white many Hue bulbs accept.
+const int cappedWarmestMireds = 454;
+
+/// Short name of a Hue characteristic for logs.
+String charName(Guid uuid) {
+  if (uuid == HueUuids.power) return 'power';
+  if (uuid == HueUuids.brightness) return 'brightness';
+  if (uuid == HueUuids.temperature) return 'temperature';
+  if (uuid == HueUuids.color) return 'colour';
+  return uuid.str;
+}
+
+String hexBytes(List<int> bytes) =>
+    bytes.map((b) => (b & 0xFF).toRadixString(16).padLeft(2, '0')).join(' ');
 
 const int minBrightness = 1;
 const int maxBrightness = 254;
@@ -233,6 +263,11 @@ class HueLight {
   BluetoothCharacteristic? _brightness;
   BluetoothCharacteristic? _temperature;
   BluetoothCharacteristic? _color;
+  BluetoothCharacteristic? _combined;
+  BluetoothCharacteristic? _schedules;
+  BluetoothCharacteristic? _clock;
+  StreamSubscription<List<int>>? _scheduleSub;
+  final _scheduleReplies = StreamController<ScheduleReply>.broadcast();
 
   String? _bulbName;
   String? _modelNumber;
@@ -344,6 +379,15 @@ class HueLight {
     _brightness = find(HueUuids.brightness);
     _temperature = find(HueUuids.temperature);
     _color = find(HueUuids.color);
+    _combined = find(HueUuids.combined);
+    BluetoothCharacteristic? anywhere(Guid uuid) =>
+        [for (final svc in services) ...svc.characteristics]
+            .where((c) => c.characteristicUuid == uuid)
+            .firstOrNull;
+    _schedules = anywhere(HueUuids.schedules);
+    _clock = anywhere(HueUuids.clock);
+    await _scheduleSub?.cancel();
+    _scheduleSub = null;
     if (_power == null || _brightness == null) {
       throw StateError(
         'The Hue light service is missing the power or brightness '
@@ -433,25 +477,61 @@ class HueLight {
     BluetoothCharacteristic c,
     List<int> value, {
     bool fast = false,
-  }) => c.write(
-    value,
-    withoutResponse: fast && c.properties.writeWithoutResponse,
-  );
+  }) async {
+    if (HueUuids.neverWrite.contains(c.characteristicUuid)) {
+      throw StateError('Refusing to write ${c.characteristicUuid}');
+    }
+    final noResponse = fast && c.properties.writeWithoutResponse;
+    try {
+      await c.write(value, withoutResponse: noResponse);
+    } catch (e) {
+      diag(
+        'ble',
+        '${_tag()} write ${charName(c.characteristicUuid)} '
+            '${hexBytes(value)}${noResponse ? ' (no response)' : ''} '
+            'failed: $e',
+      );
+      rethrow;
+    }
+  }
+
+  Future<List<int>> _read(BluetoothCharacteristic c, {int timeout = 15}) async {
+    try {
+      return await c.read(timeout: timeout);
+    } catch (e) {
+      diag(
+        'ble',
+        '${_tag()} read ${charName(c.characteristicUuid)} failed: $e',
+      );
+      rethrow;
+    }
+  }
+
+  String _tag() {
+    final id = device.remoteId.str;
+    return '$name (${id.length > 8 ? id.substring(0, 8) : id})';
+  }
+
+  /// Warmest colour temperature this bulb accepts. Hue bulbs go to 500
+  /// mireds (2000 K) or stop at 454 (2200 K); we learn which on the first
+  /// refused write.
+  int _warmestMireds = maxMireds;
+  int get warmestMireds => _warmestMireds;
 
   Future<void> _readState({int firstTimeout = 15}) async {
     var s = _state.copyWith(
       on: decodePower(
-        await _require(_power, 'power').read(timeout: firstTimeout),
+        await _read(_require(_power, 'power'), timeout: firstTimeout),
       ),
       brightness: decodeBrightness(
-        await _require(_brightness, 'brightness').read(),
+        await _read(_require(_brightness, 'brightness')),
       ),
     );
     if (_temperature case final t?) {
-      s = s.copyWith(mireds: decodeMireds(await t.read()));
+      s = s.copyWith(mireds: decodeMireds(await _read(t)));
     }
     if (_color case final c?) {
-      s = s.copyWith(xy: decodeXy(await c.read()));
+      s = s.copyWith(xy: decodeXy(await _read(c)));
     }
     if (s.mode == null) {
       s = s.copyWith(mode: _color == null ? HueMode.white : guessMode(s.xy));
@@ -494,12 +574,18 @@ class HueLight {
   }
 
   Future<void> setTemperature(int mireds, {bool fast = false}) async {
-    final m = mireds.clamp(minMireds, maxMireds);
-    await _write(
-      _require(_temperature, 'colour temperature'),
-      encodeMireds(m),
-      fast: fast,
-    );
+    final c = _require(_temperature, 'colour temperature');
+    var m = mireds.clamp(minMireds, _warmestMireds);
+    try {
+      await _write(c, encodeMireds(m), fast: fast);
+    } catch (e) {
+      // Older bulbs refuse anything warmer than 2200 K (an ATT error).
+      if (m <= cappedWarmestMireds || e is! FlutterBluePlusException) rethrow;
+      _warmestMireds = cappedWarmestMireds;
+      m = cappedWarmestMireds;
+      diag('ble', '${_tag()} caps white at 2200 K; retrying');
+      await _write(c, encodeMireds(m), fast: fast);
+    }
     _emit(_state.copyWith(mireds: m, mode: HueMode.white));
   }
 
@@ -507,6 +593,177 @@ class HueLight {
     await _write(_require(_color, 'colour'), encodeXy(x, y), fast: fast);
     // Report what the bulb actually stores after 16-bit quantisation.
     _emit(_state.copyWith(xy: decodeXy(encodeXy(x, y)), mode: HueMode.color));
+  }
+
+  // --- Combined state
+
+  /// Whether the bulb takes combined writes with a fade time.
+  bool get supportsTransitions => _combined != null;
+  bool _combinedBroken = false;
+
+  /// Sets several things at once, fading over [transition]. Uses the
+  /// combined characteristic; falls back to separate writes (without the
+  /// fade) if the bulb lacks it or refuses.
+  Future<void> setLook({
+    bool? on,
+    int? brightness,
+    int? mireds,
+    XyColor? xy,
+    Duration? transition,
+  }) async {
+    final c = _combined;
+    if (c != null && !_combinedBroken) {
+      final m = mireds?.clamp(minMireds, _warmestMireds);
+      try {
+        await _write(
+          c,
+          encodeCombinedState(
+            on: on,
+            brightness: brightness,
+            mireds: m,
+            xy: xy,
+            transition: transition,
+          ),
+        );
+        var s = _state;
+        if (on != null) s = s.copyWith(on: on);
+        if (brightness != null) {
+          s = s.copyWith(
+            brightness: brightness.clamp(minBrightness, maxBrightness),
+          );
+        }
+        if (xy != null) {
+          s = s.copyWith(
+            xy: decodeXy(encodeXy(xy.x, xy.y)),
+            mode: HueMode.color,
+          );
+        } else if (m != null) {
+          s = s.copyWith(mireds: m, mode: HueMode.white);
+        }
+        _emit(s);
+        return;
+      } catch (e) {
+        _combinedBroken = true;
+        diag('ble', '${_tag()} combined write refused; using separate writes');
+      }
+    }
+    if (on == true && !_state.on) await setPower(true);
+    if (xy != null && supportsColor) {
+      await setColor(xy.x, xy.y);
+    } else if (mireds != null && supportsTemperature) {
+      await setTemperature(mireds);
+    }
+    if (brightness != null) await setBrightness(brightness);
+    if (on == false) await setPower(false);
+  }
+
+  // --- On-bulb schedules
+
+  bool get supportsSchedules => _schedules != null && _clock != null;
+
+  /// Sets the bulb's clock to now. Schedules run on the bulb's clock.
+  Future<void> syncClock() async {
+    final c = _clock;
+    if (c == null) throw StateError('No clock on this bulb');
+    await _write(c, buildClockSync(DateTime.now()));
+  }
+
+  Future<ScheduleReply> _scheduleCommand(
+    List<int> payload,
+    bool Function(ScheduleReply r) accept,
+  ) async {
+    final c = _schedules;
+    if (c == null) throw StateError('No schedules on this bulb');
+    if (_scheduleSub == null) {
+      _scheduleSub = c.onValueReceived.listen((v) {
+        final r = ScheduleReply.parse(v);
+        diag('sched', '${_tag()} <- ${hexBytes(v)}');
+        if (r != null) _scheduleReplies.add(r);
+      });
+      device.cancelWhenDisconnected(_scheduleSub!);
+      await c.setNotifyValue(true);
+    }
+    final reply = _scheduleReplies.stream
+        .firstWhere(accept)
+        .timeout(const Duration(seconds: 6));
+    diag('sched', '${_tag()} -> ${hexBytes(payload)}');
+    await _write(c, payload);
+    return reply;
+  }
+
+  /// Ids of the schedules stored on the bulb.
+  Future<List<int>> listSchedules() async {
+    final r = await _scheduleCommand(
+      buildScheduleList(),
+      (r) => r is ScheduleList,
+    );
+    return (r as ScheduleList).ids;
+  }
+
+  /// Title of a stored schedule, or null if it can't be read.
+  Future<String?> scheduleTitle(int id) async {
+    final c = _schedules;
+    if (c == null) return null;
+    final completer = Completer<String?>();
+    final sub = c.onValueReceived.listen((v) {
+      // Read-back: 02 00 <id_le> <len> 00 00 <body>; the title length sits
+      // at body offset 45 and the title follows.
+      if (v.length > 8 && v[0] == ScheduleOp.read && v[1] == 0x00) {
+        final rid = v[2] | (v[3] << 8);
+        if (rid != id || completer.isCompleted) return;
+        final body = v.sublist(8);
+        const titleLenAt = 48 - 3;
+        if (body.length <= titleLenAt) return completer.complete(null);
+        final n = body[titleLenAt];
+        final end = titleLenAt + 1 + n;
+        completer.complete(
+          end <= body.length
+              ? String.fromCharCodes(body.sublist(titleLenAt + 1, end))
+              : null,
+        );
+      }
+    });
+    try {
+      if (_scheduleSub == null) await listSchedules(); // enables notify
+      await _write(c, [ScheduleOp.read, id & 0xFF, id >> 8, 0x00, 0x00]);
+      return await completer.future.timeout(const Duration(seconds: 6));
+    } catch (_) {
+      return null;
+    } finally {
+      await sub.cancel();
+    }
+  }
+
+  /// Stores a schedule on the bulb. Returns its id, or null if refused.
+  Future<int?> createSchedule({
+    required BulbScheduleKind kind,
+    required DateTime at,
+    required Duration fade,
+    required String title,
+    int brightness = 254,
+    int mireds = 447,
+  }) async {
+    final rnd = math.Random.secure();
+    final r = await _scheduleCommand(
+      buildSchedulePayload(
+        kind: kind,
+        at: at,
+        fade: fade,
+        title: title,
+        uuid: [for (var i = 0; i < 16; i++) rnd.nextInt(256)],
+        brightness: brightness,
+        mireds: mireds.clamp(minMireds, _warmestMireds),
+      ),
+      (r) => r is ScheduleCreated || r is ScheduleRejected,
+    );
+    return r is ScheduleCreated ? r.id : null;
+  }
+
+  Future<void> deleteSchedule(int id) async {
+    await _scheduleCommand(
+      buildScheduleDelete(id),
+      (r) => r is ScheduleDeleted && r.id == id,
+    );
   }
 
   Future<void> disconnect() async {
@@ -526,6 +783,8 @@ class HueLight {
   /// Cancels subscriptions, closes [stateStream] and disconnects.
   Future<void> dispose() async {
     _fadeTimer?.cancel();
+    await _scheduleSub?.cancel();
+    await _scheduleReplies.close();
     await _cancelSubscriptions();
     await _stateController.close();
     try {
