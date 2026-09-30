@@ -131,6 +131,13 @@ void main() {
       // Every design still shows the names.
       expect(find.text('Desk lamp'), findsWidgets);
       expect(find.text('Office'), findsWidgets);
+      if (d == AppDesign.lumen) {
+        // Pillars are sliders to assistive tech.
+        expect(
+          find.bySemanticsLabel(RegExp('^Desk lamp brightness')),
+          findsOneWidget,
+        );
+      }
     }
   });
 

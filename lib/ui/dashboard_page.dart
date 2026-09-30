@@ -32,9 +32,16 @@ class DashboardPage extends StatelessWidget {
             .connected([for (final l in store.lights) l.id])
             .where((l) => l.state.on)
             .length;
-        return Scaffold(
+        final scaffold = Scaffold(
+          backgroundColor: design == AppDesign.lumen
+              ? Colors.transparent
+              : null,
           appBar: AppBar(
-            title: Text(design == AppDesign.glow ? 'Home' : 'Lights'),
+            title: Text(
+              design == AppDesign.glow || design == AppDesign.lumen
+                  ? 'Home'
+                  : 'Lights',
+            ),
             actions: [
               IconButton(
                 tooltip: 'Design',
@@ -90,6 +97,10 @@ class DashboardPage extends StatelessWidget {
                               lightsOn: lightsOn,
                             ),
                             AppDesign.rooms => _RoomsLayout(nav),
+                            AppDesign.lumen => _LumenLayout(
+                              nav,
+                              lightsOn: lightsOn,
+                            ),
                           },
                         ),
                       ),
@@ -99,6 +110,27 @@ class DashboardPage extends StatelessWidget {
           bottomNavigationBar: store.lights.isEmpty
               ? null
               : _BottomBar(nav, design: design),
+        );
+        if (design != AppDesign.lumen) return scaffold;
+        // Lumen: the sky for this time of day, under a scrim that keeps
+        // white text readable even on the bright midday sky.
+        return DecoratedBox(
+          decoration: BoxDecoration(gradient: skyGradient(DateTime.now())),
+          child: DecoratedBox(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  Color(0x80000000),
+                  Color(0x26000000),
+                  Color(0x66000000),
+                ],
+                stops: [0, 0.4, 1],
+              ),
+            ),
+            child: scaffold,
+          ),
         );
       },
     );
@@ -783,6 +815,291 @@ class _MiniCard extends StatelessWidget {
   }
 }
 
+// --- Lumen: glass pillars on a living sky
+
+/// Three rails (favourites, groups, lights) that scroll sideways, so the
+/// pillars' vertical drag-to-dim never fights a vertical page scroll.
+class _LumenLayout extends StatelessWidget {
+  const _LumenLayout(this.nav, {required this.lightsOn});
+
+  final _Nav nav;
+  final int lightsOn;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final (favorites, groups, lights) = nav.sections();
+    final rails = [
+      if (favorites.isNotEmpty) ('Favourites', favorites),
+      if (groups.isNotEmpty) ('Groups', groups),
+      if (lights.isNotEmpty) ('Lights', lights),
+    ];
+    final now = TimeOfDay.now().format(context);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 2, 20, 6),
+            child: Text(
+              '$now · ${lightsOn == 1 ? '1 light on' : '$lightsOn lights on'}',
+              style: theme.textTheme.titleMedium?.copyWith(
+                color: Colors.white.withValues(alpha: 0.9),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          for (final (title, ids) in rails)
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 6),
+                    child: Text(
+                      title.toUpperCase(),
+                      style: theme.textTheme.labelLarge?.copyWith(
+                        color: Colors.white.withValues(alpha: 0.85),
+                        letterSpacing: 1.4,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: ListView.separated(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                      itemCount: ids.length,
+                      separatorBuilder: (_, _) => const SizedBox(width: 12),
+                      itemBuilder: (context, i) => SizedBox(
+                        width: 100,
+                        child: _Pillar(nav, ids[i], key: ValueKey(ids[i])),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A frosted-glass pillar filled from the bottom in the light's colour.
+/// Drag up or down to dim, tap to switch, the arrow opens the controls,
+/// hold for details. A slider to assistive tech.
+class _Pillar extends StatefulWidget {
+  const _Pillar(this.nav, this.id, {super.key});
+
+  final _Nav nav;
+  final String id;
+
+  @override
+  State<_Pillar> createState() => _PillarState();
+}
+
+class _PillarState extends State<_Pillar> {
+  late final _b = PacedValue<double>(
+    send: (v, {required confirmed}) => widget.nav.hub.setBrightness(
+      widget.nav.ids(widget.id),
+      v.round(),
+      fast: !confirmed,
+    ),
+    onError: (e) {
+      if (mounted) showError(context, e);
+    },
+  );
+  double _last = maxBrightness.toDouble();
+
+  @override
+  void dispose() {
+    _b.dispose();
+    super.dispose();
+  }
+
+  double _valueAt(double dy, double height) =>
+      (minBrightness +
+              (1 - (dy / height).clamp(0.0, 1.0)) *
+                  (maxBrightness - minBrightness))
+          .toDouble();
+
+  void _step(double by) {
+    final nav = widget.nav;
+    final v = ((_b.shown ?? _current()) + by).clamp(
+      minBrightness.toDouble(),
+      maxBrightness.toDouble(),
+    );
+    if (!nav.isOn(widget.id)) nav.toggle(widget.id, true);
+    _b.set(v);
+  }
+
+  double _current() {
+    final lit = widget.nav.hub
+        .connected(widget.nav.ids(widget.id))
+        .where((l) => l.state.on)
+        .firstOrNull;
+    return (lit?.state.brightness ?? maxBrightness).toDouble();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final nav = widget.nav;
+    final id = widget.id;
+    final theme = Theme.of(context);
+    final connected = nav.connected(id);
+    final on = nav.isOn(id);
+    final c = nav.color(id) ?? kelvinColor(2700);
+    final name = nav.store.nameOf(id);
+    return ListenableBuilder(
+      listenable: _b,
+      builder: (context, _) {
+        final value = _b.shown ?? _current();
+        final fill = on ? value / maxBrightness : 0.0;
+        final pct = (value / maxBrightness * 100).round();
+        return LayoutBuilder(
+          builder: (context, box) {
+            final h = box.maxHeight;
+            return Semantics(
+              slider: true,
+              label: '$name brightness',
+              value: !connected ? 'Not connected' : (on ? '$pct%' : 'Off'),
+              onIncrease: connected ? () => _step(25) : null,
+              onDecrease: connected ? () => _step(-25) : null,
+              onTap: connected ? () => nav.toggle(id, !on) : null,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: connected ? () => nav.toggle(id, !on) : null,
+                onLongPress: () => nav.info(id),
+                onVerticalDragStart: connected
+                    ? (d) {
+                        HapticFeedback.selectionClick();
+                        if (!on) nav.toggle(id, true);
+                        _last = _valueAt(d.localPosition.dy, h);
+                        _b.start(_last);
+                      }
+                    : null,
+                onVerticalDragUpdate: connected
+                    ? (d) {
+                        _last = _valueAt(d.localPosition.dy, h);
+                        _b.update(_last);
+                      }
+                    : null,
+                onVerticalDragEnd: connected ? (_) => _b.end(_last) : null,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 300),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(34),
+                    boxShadow: [
+                      if (on)
+                        BoxShadow(
+                          color: c.withValues(alpha: 0.25 + 0.45 * fill),
+                          blurRadius: 12 + 28 * fill,
+                        ),
+                    ],
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(34),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        const ColoredBox(color: Color(0x47000000)),
+                        Align(
+                          alignment: Alignment.bottomCenter,
+                          child: AnimatedContainer(
+                            duration: _b.dragging
+                                ? Duration.zero
+                                : const Duration(milliseconds: 260),
+                            curve: Curves.easeOutCubic,
+                            height: h * fill,
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [Color.lerp(c, Colors.white, 0.35)!, c],
+                              ),
+                            ),
+                          ),
+                        ),
+                        DecoratedBox(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(34),
+                            border: Border.all(color: const Color(0x40FFFFFF)),
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 4, 0, 12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      !connected
+                                          ? '···'
+                                          : (on ? '$pct%' : 'Off'),
+                                      style: theme.textTheme.titleMedium
+                                          ?.copyWith(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.w800,
+                                            shadows: const [
+                                              Shadow(
+                                                color: Colors.black54,
+                                                blurRadius: 6,
+                                              ),
+                                            ],
+                                          ),
+                                    ),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'Open $name',
+                                    onPressed: () => nav.open(id),
+                                    icon: const Icon(
+                                      Icons.arrow_outward,
+                                      color: Colors.white,
+                                      size: 20,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const Spacer(),
+                              Padding(
+                                padding: const EdgeInsets.only(right: 10),
+                                child: Text(
+                                  name,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: theme.textTheme.titleSmall?.copyWith(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w800,
+                                    height: 1.15,
+                                    shadows: const [
+                                      Shadow(
+                                        color: Colors.black87,
+                                        blurRadius: 8,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
 // --- Shared bits
 
 /// Dims every light that is on, next to All off. With everything off,
@@ -829,7 +1146,7 @@ class _MasterBarState extends State<_MasterBar> {
         ? maxBrightness.toDouble()
         : lit.map((l) => l.state.brightness).reduce((a, b) => a + b) /
               lit.length;
-    final glow = widget.design == AppDesign.glow;
+    final glow = widget.design.isDark;
     final wire = widget.design == AppDesign.wireframe;
     final warm = kelvinColor(2700);
     return Padding(
@@ -946,9 +1263,11 @@ class _BottomBar extends StatelessWidget {
         ),
         padding: const EdgeInsets.symmetric(horizontal: 4),
         decoration: BoxDecoration(
-          color: design == AppDesign.glow
-              ? const Color(0xFF1C1A18)
-              : theme.colorScheme.surfaceContainerLow,
+          color: switch (design) {
+            AppDesign.glow => const Color(0xFF1C1A18),
+            AppDesign.lumen => const Color(0x33FFFFFF),
+            _ => theme.colorScheme.surfaceContainerLow,
+          },
           borderRadius: BorderRadius.circular(
             design == AppDesign.wireframe ? 8 : 28,
           ),
@@ -1164,6 +1483,9 @@ class _DesignCard extends StatelessWidget {
           onTap: onTap,
           child: Container(
             decoration: BoxDecoration(
+              gradient: design == AppDesign.lumen
+                  ? skyGradient(DateTime.now())
+                  : null,
               borderRadius: BorderRadius.circular(18),
               border: Border.all(
                 color: selected ? scheme.primary : scheme.outlineVariant,
