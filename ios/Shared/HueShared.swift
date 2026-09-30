@@ -270,6 +270,21 @@ struct SetPowerIntent: SetValueIntent, LiveActivityIntent {
   }
 }
 
+/// Turns every saved light on.
+@available(iOS 17.0, *)
+struct AllOnIntent: AppIntent, LiveActivityIntent {
+  static var title: LocalizedStringResource = "All lights on"
+  static var description = IntentDescription("Turns every Hue light on.")
+
+  func perform() async throws -> some IntentResult {
+    let all = HueShared.load().all
+    _ = await HueBLE.shared.setPower(all, on: true)
+    HueShared.markSwitched(Set(all), on: true)
+    HueShared.reloadWidgets()
+    return .result()
+  }
+}
+
 /// Turns every saved light off.
 @available(iOS 17.0, *)
 struct AllOffIntent: AppIntent, LiveActivityIntent {

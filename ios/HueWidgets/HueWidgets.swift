@@ -11,6 +11,7 @@ struct HueWidgetsBundle: WidgetBundle {
     LightsWidget()
     LightControl()
     AllOffControl()
+    AllOnControl()
   }
 }
 
@@ -87,14 +88,24 @@ struct LightsWidgetView: View {
           }
         }
         if family != .systemSmall {
-          Button(intent: AllOffIntent()) {
-            Label("All off", systemImage: "power")
-              .font(.caption.weight(.semibold))
-              .frame(maxWidth: .infinity)
-              .padding(.vertical, 6)
-              .background(.quaternary, in: Capsule())
+          HStack(spacing: 8) {
+            Button(intent: AllOnIntent()) {
+              Label("All on", systemImage: "lightbulb.fill")
+                .font(.caption.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+                .background(.quaternary, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            Button(intent: AllOffIntent()) {
+              Label("All off", systemImage: "power")
+                .font(.caption.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+                .background(.quaternary, in: Capsule())
+            }
+            .buttonStyle(.plain)
           }
-          .buttonStyle(.plain)
         }
       }
     }
@@ -191,5 +202,17 @@ struct AllOffControl: ControlWidget {
     }
     .displayName("All lights off")
     .description("Turns every Hue light off.")
+  }
+}
+
+struct AllOnControl: ControlWidget {
+  var body: some ControlWidgetConfiguration {
+    StaticControlConfiguration(kind: "AllOnControl") {
+      ControlWidgetButton(action: AllOnIntent()) {
+        Label("All lights on", systemImage: "lightbulb.fill")
+      }
+    }
+    .displayName("All lights on")
+    .description("Turns every Hue light on.")
   }
 }

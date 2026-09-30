@@ -597,6 +597,7 @@ class _TargetPageState extends State<TargetPage> {
               ],
             ),
           ),
+        const PlayingBar(),
         ControlCard(
           title: 'Scenes',
           trailing: TextButton(

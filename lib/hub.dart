@@ -463,10 +463,19 @@ class HueHub extends ChangeNotifier {
 
   Timer? _dynamicTimer;
   Set<String> _dynamicIds = {};
-  String? _dynamicScene;
+  HueScene? _dynamicScene;
+  int _dynamicStep = 0;
+  double _speed = 0.5;
 
   /// The scene currently playing dynamically, if any.
-  String? get playingScene => _dynamicScene;
+  String? get playingScene => _dynamicScene?.name;
+
+  /// How fast a playing scene moves, 0 (slow) to 1 (fast).
+  double get playSpeed => _speed;
+
+  /// Seconds between colour changes: 120 s at 0, 4 s at 1.
+  Duration get _period =>
+      Duration(milliseconds: (120000 * math.pow(4 / 120, _speed)).round());
 
   /// Like the Hue app's play button: applies [scene], then keeps handing
   /// its colours round the lights with slow fades until something else
@@ -476,18 +485,39 @@ class HueHub extends ChangeNotifier {
     await applyScene(list, scene);
     if (scene.colors.length < 2) return;
     _dynamicIds = list.toSet();
-    _dynamicScene = scene.name;
-    var step = 0;
-    _dynamicTimer = Timer.periodic(const Duration(seconds: 25), (_) {
-      step++;
-      final looks = sceneLooks(scene, _abilities(_dynamicIds), offset: step);
+    _dynamicScene = scene;
+    _dynamicStep = 0;
+    _startDynamicTimer();
+    _notify();
+  }
+
+  void setPlaySpeed(double speed) {
+    _speed = speed.clamp(0.0, 1.0);
+    if (_dynamicTimer != null) _startDynamicTimer();
+    _notify();
+  }
+
+  void stopScene() => _stopDynamic();
+
+  void _startDynamicTimer() {
+    _dynamicTimer?.cancel();
+    final period = _period;
+    // Fade most of the way to the next colour, but never longer than it.
+    final glide = period * 0.7;
+    _dynamicTimer = Timer.periodic(period, (_) {
+      final scene = _dynamicScene;
+      if (scene == null) return;
+      _dynamicStep++;
+      final looks = sceneLooks(
+        scene,
+        _abilities(_dynamicIds),
+        offset: _dynamicStep,
+      );
       _each(
         looks.keys,
-        (id, l) =>
-            _applyLook(l, looks[id]!, glide: const Duration(seconds: 15)),
+        (id, l) => _applyLook(l, looks[id]!, glide: glide),
       ).catchError((Object e) => diag('scene', '${scene.name}: $e'));
     });
-    _notify();
   }
 
   void _stopDynamic([Iterable<String>? ids]) {
