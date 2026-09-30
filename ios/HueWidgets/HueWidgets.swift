@@ -1,4 +1,4 @@
-// Home Screen widgets and Control Center controls for Hue BLE Remote.
+// Home Screen widgets and Control Center controls for Bluelight.
 // Tapping runs an intent from HueShared.swift in the app's process.
 
 import AppIntents
@@ -48,7 +48,7 @@ struct LightsWidget: Widget {
       LightsWidgetView(entry: entry)
         .containerBackground(.fill.tertiary, for: .widget)
     }
-    .configurationDisplayName("Hue lights")
+    .configurationDisplayName("Bluelight")
     .description("Switch your favourite lights and groups.")
     .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
   }
@@ -71,7 +71,7 @@ struct LightsWidgetView: View {
     if targets.isEmpty {
       VStack(spacing: 6) {
         Image(systemName: "lightbulb").font(.title2)
-        Text("Open Hue BLE Remote to add lights").font(.caption).multilineTextAlignment(.center)
+        Text("Open Bluelight to add lights").font(.caption).multilineTextAlignment(.center)
       }
     } else {
       VStack(spacing: 8) {
