@@ -1,4 +1,3 @@
-import 'package:flutter/cupertino.dart' show CupertinoPageTransitionsBuilder;
 import 'package:flutter/material.dart';
 
 import 'bulb_scheduler.dart';
@@ -9,6 +8,7 @@ import 'store.dart';
 import 'widget_bridge.dart';
 import 'ui/common.dart';
 import 'ui/dashboard_page.dart';
+import 'ui/designs.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -32,36 +32,22 @@ Future<void> main() async {
 class HueBleApp extends StatelessWidget {
   const HueBleApp({super.key});
 
-  ThemeData _theme(Brightness brightness) {
-    final scheme = ColorScheme.fromSeed(
-      seedColor: Colors.orange,
-      brightness: brightness,
-    );
-    return ThemeData(
-      colorScheme: scheme,
-      cardTheme: const CardThemeData(
-        elevation: 0,
-        margin: EdgeInsets.symmetric(vertical: 5),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.all(Radius.circular(20)),
-        ),
-      ),
-      pageTransitionsTheme: const PageTransitionsTheme(
-        builders: {
-          TargetPlatform.android: PredictiveBackPageTransitionsBuilder(),
-          TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
-        },
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Hue BLE Remote',
-      theme: _theme(Brightness.light),
-      darkTheme: _theme(Brightness.dark),
-      home: const DashboardPage(),
+    final store = AppScope.of(context).store;
+    return ListenableBuilder(
+      listenable: store,
+      builder: (context, _) {
+        final design = AppDesign.fromName(store.design);
+        return MaterialApp(
+          title: 'Hue BLE Remote',
+          // Each design is its own look, light or dark.
+          theme: design.theme(),
+          themeMode: ThemeMode.light,
+          themeAnimationDuration: const Duration(milliseconds: 350),
+          home: const DashboardPage(),
+        );
+      },
     );
   }
 }

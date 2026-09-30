@@ -19,6 +19,7 @@ class AppStore extends ChangeNotifier {
   List<Routine> _routines = [];
   Map<String, DateTime> _lastRuns = {};
   List<String> _favorites = [];
+  String? _design;
   Set<String> _natural = {};
 
   List<SavedLight> get lights => List.unmodifiable(_lights);
@@ -53,6 +54,7 @@ class AppStore extends ChangeNotifier {
       _presets = list('presets').map(Preset.fromJson).toList();
       _routines = list('routines').map(Routine.fromJson).toList();
       _favorites = [...?(j['favorites'] as List?)?.whereType<String>()];
+      _design = j['design'] as String?;
       _natural = {...?(j['natural'] as List?)?.whereType<String>()};
       _lastRuns = {};
       for (final e in ((j['lastRuns'] as Map?) ?? const {}).entries) {
@@ -76,6 +78,7 @@ class AppStore extends ChangeNotifier {
         'presets': [for (final p in _presets) p.toJson()],
         'routines': [for (final r in _routines) r.toJson()],
         'favorites': _favorites,
+        if (_design != null) 'design': _design,
         'natural': _natural.toList(),
         'lastRuns': {
           for (final e in _lastRuns.entries) e.key: e.value.toIso8601String(),
@@ -105,6 +108,16 @@ class AppStore extends ChangeNotifier {
       _presets.where((p) => p.scopeId == scopeId).toList();
 
   DateTime? lastRun(String routineId) => _lastRuns[routineId];
+
+  // --- Design
+
+  /// Name of the chosen dashboard design (see AppDesign), or null.
+  String? get design => _design;
+
+  Future<void> setDesign(String name) async {
+    _design = name;
+    await _save();
+  }
 
   // --- Favourites
 
