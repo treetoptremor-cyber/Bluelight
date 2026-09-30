@@ -1,4 +1,6 @@
-# Hue BLE Remote
+# Bluelight
+
+(Repository: `hue-ble-remote`; the Dart package and bundle id keep that name.)
 
 A small Flutter app for iPhone and Android that controls **Philips Hue Bluetooth
 bulbs directly over Bluetooth Low Energy**, with no Hue Bridge and no account.
@@ -83,7 +85,7 @@ bulb to use it with this app**: a reset wipes all of its pairings and removes
 it from the Hue app.
 
 **Bulb set up in the Hue app on this same phone.** Nothing to do. The phone is
-already paired, so Hue BLE Remote uses the same pairing and both apps keep
+already paired, so Bluelight uses the same pairing and both apps keep
 working. There is no pairing prompt.
 
 **Bulb set up in the Hue app on another phone.** Let the bulb accept one more
@@ -94,7 +96,7 @@ pairing, without a reset:
    Make discoverable** (Home Assistant's `hue_ble` docs also list
    **Google Home → Make discoverable**). The bulb accepts new pairings for a
    few minutes. Menu names vary between Hue app versions.
-2. On your phone, open Hue BLE Remote, tap the bulb, and accept the
+2. On your phone, open Bluelight, tap the bulb, and accept the
    **pairing prompt**.
 3. The bulb keeps working in the Hue app on the other phone.
 
@@ -103,7 +105,7 @@ prompt.
 
 In all cases:
 
-- Power the bulb on and open Hue BLE Remote with Bluetooth on. The bulb should
+- Power the bulb on and open Bluelight with Bluetooth on. The bulb should
   appear within about 15 seconds. Bulbs the phone is already connected to
   (for example by the Hue app) or paired with are listed too, marked
   **Connected** or **Paired**, even if they are not advertising.

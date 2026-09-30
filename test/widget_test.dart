@@ -28,7 +28,12 @@ Future<(AppStore, HueHub, RoutineRunner)> _pumpApp(
     hub.dispose();
   });
   await tester.pumpWidget(
-    AppScope(store: store, hub: hub, runner: runner, child: const HueBleApp()),
+    AppScope(
+      store: store,
+      hub: hub,
+      runner: runner,
+      child: const BluelightApp(),
+    ),
   );
   return (store, hub, runner);
 }

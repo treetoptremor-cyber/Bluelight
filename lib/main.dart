@@ -30,13 +30,13 @@ Future<void> main() async {
       hub: hub,
       runner: runner,
       scheduler: scheduler,
-      child: const HueBleApp(),
+      child: const BluelightApp(),
     ),
   );
 }
 
-class HueBleApp extends StatelessWidget {
-  const HueBleApp({super.key});
+class BluelightApp extends StatelessWidget {
+  const BluelightApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -46,7 +46,7 @@ class HueBleApp extends StatelessWidget {
       builder: (context, _) {
         final design = AppDesign.fromName(store.design);
         return MaterialApp(
-          title: 'Hue BLE Remote',
+          title: 'Bluelight',
           // Each design is its own look, light or dark.
           theme: design.theme(),
           themeMode: ThemeMode.light,
