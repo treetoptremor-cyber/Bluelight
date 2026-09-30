@@ -6,6 +6,7 @@ import 'diagnostics.dart';
 import 'hub.dart';
 import 'routine_runner.dart';
 import 'store.dart';
+import 'widget_bridge.dart';
 import 'ui/common.dart';
 import 'ui/dashboard_page.dart';
 
@@ -16,6 +17,7 @@ Future<void> main() async {
   final hub = HueHub(store);
   final scheduler = BulbScheduler(store, hub);
   final runner = RoutineRunner(store, hub, scheduler: scheduler);
+  WidgetBridge(store, hub);
   runApp(
     AppScope(
       store: store,
