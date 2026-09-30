@@ -4,6 +4,8 @@ import 'package:flutter/services.dart';
 import '../color_utils.dart';
 import '../hub.dart';
 import '../hue_ble.dart';
+import '../hue_protocol_ext.dart';
+import '../natural_light.dart';
 import '../models.dart';
 import '../paced_value.dart';
 import '../store.dart';
@@ -21,7 +23,8 @@ typedef HueSat = ({double hue, double sat});
 /// White-balance notches on the White slider.
 const _whiteNotches = <(String, double)>[
   ('Candle', 2200), // candlelight, a cosy restaurant
-  ('Warm indoor', 2700),
+  ('Warm', 2700), // warm indoor
+  ('Neutral', 3500), // neutral indoor
   ('Daylight', 5500),
 ];
 
@@ -73,6 +76,7 @@ class _TargetPageState extends State<TargetPage> {
 
   /// Shown while a power write is in flight, so the switch flips at once.
   bool? _powerOverride;
+  double _effectSpeed = 128;
 
   /// Hue to keep when the bulb reports a near-white colour (hue undefined).
   double _lastHue = 30;
@@ -122,6 +126,31 @@ class _TargetPageState extends State<TargetPage> {
     _ensureOn();
     _color.set((hue: hsv.hue, sat: hsv.saturation));
   }
+
+  Future<void> _setEffect(HueEffect e) async {
+    HapticFeedback.selectionClick();
+    try {
+      await _hub.setEffect(_ids, e, speed: _effectSpeed.round());
+    } catch (err) {
+      _error(err);
+    }
+  }
+
+  static IconData _effectIcon(HueEffect e) => switch (e) {
+    HueEffect.candle => Icons.local_fire_department_outlined,
+    HueEffect.fireplace => Icons.fireplace_outlined,
+    HueEffect.prism => Icons.gradient,
+    HueEffect.sunrise => Icons.wb_twilight,
+    HueEffect.sunset => Icons.nights_stay_outlined,
+    HueEffect.sparkle => Icons.auto_awesome,
+    HueEffect.opal => Icons.blur_on,
+    HueEffect.glisten => Icons.flare,
+    HueEffect.underwater => Icons.water,
+    HueEffect.cosmos => Icons.nightlight_round,
+    HueEffect.sunbeam => Icons.wb_sunny_outlined,
+    HueEffect.enchant => Icons.auto_fix_high,
+    HueEffect.none => Icons.block,
+  };
 
   Future<void> _applyPreset(Preset p) async {
     HapticFeedback.lightImpact();
@@ -325,6 +354,8 @@ class _TargetPageState extends State<TargetPage> {
     final on = _powerOverride ?? lights.any((l) => l.state.on);
     final white = lights.where((l) => l.supportsTemperature).firstOrNull;
     final colored = lights.where((l) => l.supportsColor).firstOrNull;
+    final effects = lights.where((l) => l.supportsEffects).firstOrNull;
+    final natural = ids.isNotEmpty && ids.every(_store.isNatural);
     final glow = stateColor(primary);
     final fadeEnds = _hub.fadeEndsAt(widget.targetId);
     final presets = _store.presetsFor(widget.targetId);
@@ -423,6 +454,7 @@ class _TargetPageState extends State<TargetPage> {
                               ),
                               child: _NotchButton(
                                 label: label,
+                                detail: '${v.round()} K',
                                 color: kelvinColor(v),
                                 selected: (k - v).abs() < 60,
                                 onTap: () {
@@ -434,6 +466,22 @@ class _TargetPageState extends State<TargetPage> {
                             ),
                           ),
                       ],
+                    ),
+                    const SizedBox(height: 4),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      secondary: const Icon(Icons.wb_twilight),
+                      title: const Text('Natural light'),
+                      subtitle: Text(
+                        'White follows the time of day'
+                        '${natural ? ' · now ${naturalKelvin(DateTime.now()).round()} K' : ''}. '
+                        'Changing the white turns it off.',
+                      ),
+                      value: natural,
+                      onChanged: (v) {
+                        HapticFeedback.selectionClick();
+                        _hub.setNatural(ids, v);
+                      },
                     ),
                   ],
                 ),
@@ -502,6 +550,52 @@ class _TargetPageState extends State<TargetPage> {
                 ),
               );
             },
+          ),
+        if (effects != null)
+          ControlCard(
+            title: 'Effects',
+            trailing: effects.state.effect == HueEffect.none
+                ? null
+                : TextButton(
+                    onPressed: () => _setEffect(HueEffect.none),
+                    child: const Text('Stop'),
+                  ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final e in HueEffect.values.skip(1))
+                      ChoiceChip(
+                        label: Text(e.label),
+                        avatar: Icon(_effectIcon(e), size: 18),
+                        selected: effects.state.effect == e,
+                        onSelected: (sel) =>
+                            _setEffect(sel ? e : HueEffect.none),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Text('Speed', style: theme.textTheme.bodyMedium),
+                    Expanded(
+                      child: Slider(
+                        value: _effectSpeed,
+                        max: 255,
+                        onChanged: (v) => setState(() => _effectSpeed = v),
+                        onChangeEnd: (_) {
+                          final e = effects.state.effect;
+                          if (e != HueEffect.none) _setEffect(e);
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ControlCard(
           title: 'Scenes',
@@ -649,12 +743,14 @@ class _PowerTile extends StatelessWidget {
 class _NotchButton extends StatelessWidget {
   const _NotchButton({
     required this.label,
+    required this.detail,
     required this.color,
     required this.selected,
     required this.onTap,
   });
 
   final String label;
+  final String detail;
   final Color color;
   final bool selected;
   final VoidCallback onTap;
@@ -664,7 +760,8 @@ class _NotchButton extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     return Material(
       color: selected ? scheme.secondaryContainer : scheme.surfaceContainerHigh,
-      shape: StadiumBorder(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
         side: BorderSide(
           color: selected ? scheme.secondary : scheme.outlineVariant,
         ),
@@ -673,19 +770,28 @@ class _NotchButton extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 6),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+          padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 4),
+          child: Column(
             children: [
-              LightDot(color: color, on: true, size: 12),
-              const SizedBox(width: 6),
-              Flexible(
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.labelMedium,
-                ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  LightDot(color: color, on: true, size: 10),
+                  const SizedBox(width: 5),
+                  Flexible(
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.labelMedium,
+                    ),
+                  ),
+                ],
+              ),
+              Text(
+                detail,
+                style: Theme.of(context).textTheme.labelSmall
+                    ?.copyWith(color: scheme.onSurfaceVariant),
               ),
             ],
           ),

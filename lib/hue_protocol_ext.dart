@@ -22,6 +22,130 @@ abstract final class StateTag {
 
   /// Transition time, uint16 in 100 ms units.
   static const transition = 0x05;
+
+  /// Effect id (see [HueEffect]); 0 = none.
+  static const effect = 0x06;
+
+  /// Effect speed 0..255.
+  static const effectSpeed = 0x08;
+}
+
+/// Built-in bulb effects (ids from flip-dots/HueBLE). Which ones a bulb
+/// runs depends on its model and firmware.
+enum HueEffect {
+  none(0x00, 'None'),
+  candle(0x01, 'Candle'),
+  fireplace(0x02, 'Fireplace'),
+  prism(0x03, 'Prism'),
+  sunrise(0x09, 'Sunrise'),
+  sparkle(0x0A, 'Sparkle'),
+  opal(0x0B, 'Opal'),
+  glisten(0x0C, 'Glisten'),
+  sunset(0x0D, 'Sunset'),
+  underwater(0x0E, 'Underwater'),
+  cosmos(0x0F, 'Cosmos'),
+  sunbeam(0x10, 'Sunbeam'),
+  enchant(0x11, 'Enchant');
+
+  const HueEffect(this.id, this.label);
+
+  final int id;
+  final String label;
+
+  static HueEffect fromId(int id) =>
+      values.where((e) => e.id == id).firstOrNull ?? none;
+}
+
+/// Splits a `[tag][len][value]` sequence. Stops at the first malformed
+/// entry. Later duplicates win.
+Map<int, List<int>> decodeTlv(List<int> data) {
+  final out = <int, List<int>>{};
+  var i = 0;
+  while (i + 2 <= data.length) {
+    final tag = data[i];
+    final len = data[i + 1];
+    if (i + 2 + len > data.length) break;
+    out[tag] = data.sublist(i + 2, i + 2 + len);
+    i += 2 + len;
+  }
+  return out;
+}
+
+/// The effect a combined-state notification reports, if it carries one.
+/// Notifications are 10/12 bytes without an effect and 16/18 with one;
+/// they are TLV sequences, so the effect tag is looked up directly.
+HueEffect? decodeCombinedEffect(List<int> data) {
+  final v = decodeTlv(data)[StateTag.effect];
+  return v == null || v.isEmpty ? null : HueEffect.fromId(v[0]);
+}
+
+/// What a bulb does when power comes back (e.g. after a wall switch).
+class PowerOnState {
+  const PowerOnState({
+    required this.on,
+    this.brightness = 254,
+    this.mireds = 366,
+    this.xy,
+  });
+
+  final bool on;
+  final int brightness;
+  final int mireds;
+
+  /// Colour to come on in; null means the white [mireds].
+  final XyColor? xy;
+
+  @override
+  bool operator ==(Object other) =>
+      other is PowerOnState &&
+      other.on == on &&
+      other.brightness == brightness &&
+      other.mireds == mireds &&
+      other.xy == xy;
+
+  @override
+  int get hashCode => Object.hash(on, brightness, mireds, xy);
+
+  @override
+  String toString() =>
+      'PowerOnState(on: $on, brightness: $brightness, mireds: $mireds, xy: $xy)';
+}
+
+/// Encodes a power-on state for the startup characteristic: on, brightness,
+/// white, and xy, where xy `FF FF FF FF` means "use the white instead".
+List<int> encodePowerOn(PowerOnState s) {
+  final white = [StateTag.xy, 4, 0xFF, 0xFF, 0xFF, 0xFF];
+  return [
+    ...encodeCombinedState(
+      on: s.on,
+      brightness: s.brightness,
+      mireds: s.mireds,
+      xy: s.xy,
+    ),
+    if (s.xy == null) ...white,
+  ];
+}
+
+/// Decodes the startup characteristic, or null if it isn't understood.
+PowerOnState? decodePowerOn(List<int> data) {
+  final t = decodeTlv(data);
+  final on = t[StateTag.on];
+  if (on == null || on.isEmpty) return null;
+  final b = t[StateTag.brightness];
+  final m = t[StateTag.mireds];
+  final xy = t[StateTag.xy];
+  final isWhite = xy == null || xy.length != 4 || xy.every((v) => v == 0xFF);
+  return PowerOnState(
+    on: on[0] != 0,
+    brightness: b == null || b.isEmpty ? 254 : b[0].clamp(1, 254),
+    mireds: m == null || m.length < 2 ? 366 : (m[0] | (m[1] << 8)),
+    xy: isWhite
+        ? null
+        : XyColor(
+            (xy[0] | (xy[1] << 8)) / 0xFFFF,
+            (xy[2] | (xy[3] << 8)) / 0xFFFF,
+          ),
+  );
 }
 
 /// Longest fade a single write can carry (uint16 of 100 ms units).
@@ -37,6 +161,8 @@ List<int> encodeCombinedState({
   int? mireds,
   XyColor? xy,
   Duration? transition,
+  HueEffect? effect,
+  int? effectSpeed,
 }) {
   final out = <int>[];
   if (on != null) out.addAll([StateTag.on, 1, on ? 1 : 0]);
@@ -55,6 +181,10 @@ List<int> encodeCombinedState({
   if (transition != null) {
     final t = (transition.inMilliseconds / 100).round().clamp(0, 0xFFFF);
     out.addAll([StateTag.transition, 2, t & 0xFF, t >> 8]);
+  }
+  if (effect != null) out.addAll([StateTag.effect, 1, effect.id]);
+  if (effectSpeed != null) {
+    out.addAll([StateTag.effectSpeed, 1, effectSpeed.clamp(0, 255)]);
   }
   return out;
 }

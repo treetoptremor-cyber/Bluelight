@@ -4,10 +4,12 @@ import 'dart:math' as math;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
+import 'color_utils.dart';
 import 'diagnostics.dart';
 import 'hue_ble.dart';
 import 'hue_protocol_ext.dart';
 import 'models.dart';
+import 'natural_light.dart';
 import 'scenes.dart';
 import 'store.dart';
 
@@ -71,8 +73,15 @@ class HueHub extends ChangeNotifier {
   HueHub(this.store) {
     store.addListener(_sync);
     _lifecycle = AppLifecycleListener(onPause: _pause, onResume: _resume);
+    _naturalTimer = Timer.periodic(
+      const Duration(minutes: 1),
+      (_) => naturalTick(),
+    );
+    onLightReady((id) => naturalTick(only: [id]));
     _sync();
   }
+
+  late final Timer _naturalTimer;
 
   final AppStore store;
   final _links = <String, _Link>{};
@@ -290,7 +299,81 @@ class HueHub extends ChangeNotifier {
 
   Future<void> setPower(Iterable<String> ids, bool on) {
     _cancelFadesOn(ids);
-    return _each(ids, (_, l) => l.setPower(on));
+    final mireds = kelvinToMireds(naturalKelvin(DateTime.now()));
+    return _each(ids, (id, l) {
+      // Natural-light bulbs come on in the white for the time of day.
+      if (on &&
+          store.isNatural(id) &&
+          l.supportsTemperature &&
+          (l.state.mode != HueMode.color || !l.supportsColor)) {
+        return l.setLook(on: true, mireds: mireds);
+      }
+      return l.setPower(on);
+    });
+  }
+
+  /// Turns every connected light off. Returns what they looked like, for
+  /// [applyLooks] to undo.
+  Future<Map<String, LightLook>> allOff() async {
+    final ids = [for (final l in store.lights) l.id];
+    final before = snapshot(ids);
+    await setPower(ids, false);
+    return before;
+  }
+
+  Future<void> setEffect(
+    Iterable<String> ids,
+    HueEffect effect, {
+    int speed = 128,
+  }) {
+    _cancelFadesOn(ids);
+    return _each(
+      ids,
+      (_, l) => l.setEffect(effect, speed: speed),
+      where: (l) => l.supportsEffects,
+    );
+  }
+
+  // --- Natural light
+
+  /// Eases natural-light bulbs toward the white for the time of day, fading
+  /// over most of a minute so the change is invisible.
+  Future<void> naturalTick({Iterable<String>? only}) async {
+    final target = kelvinToMireds(naturalKelvin(DateTime.now()));
+    for (final id in only ?? [for (final l in store.lights) l.id]) {
+      if (!store.isNatural(id)) continue;
+      final l = lightOf(id);
+      if (l == null || statusOf(id) != LinkStatus.connected) continue;
+      final s = l.state;
+      if (!s.on || !l.supportsTemperature || s.effect != HueEffect.none) {
+        continue;
+      }
+      if (s.mode == HueMode.color && l.supportsColor) continue;
+      if (s.mireds != null && (s.mireds! - target).abs() < 2) continue;
+      try {
+        await l.setLook(
+          mireds: target,
+          transition: const Duration(seconds: 50),
+        );
+      } catch (e) {
+        diag('natural', '${store.nameOf(id)}: $e');
+      }
+    }
+  }
+
+  /// Manual colour or white changes switch natural light off for those
+  /// lights, like adaptive lighting in the Hue app.
+  void _stopNatural(Iterable<String> ids) {
+    final natural = [
+      for (final id in ids)
+        if (store.isNatural(id)) id,
+    ];
+    if (natural.isNotEmpty) store.setNatural(natural, false);
+  }
+
+  Future<void> setNatural(Iterable<String> ids, bool natural) async {
+    await store.setNatural(ids, natural);
+    if (natural) await naturalTick(only: ids);
   }
 
   Future<void> setBrightness(
@@ -308,6 +391,7 @@ class HueHub extends ChangeNotifier {
     bool fast = false,
   }) {
     _cancelFadesOn(ids);
+    _stopNatural(ids);
     return _each(
       ids,
       (_, l) => l.setTemperature(mireds, fast: fast),
@@ -322,6 +406,7 @@ class HueHub extends ChangeNotifier {
     bool fast = false,
   }) {
     _cancelFadesOn(ids);
+    _stopNatural(ids);
     return _each(
       ids,
       (_, l) => l.setColor(x, y, fast: fast),
@@ -331,8 +416,10 @@ class HueHub extends ChangeNotifier {
 
   /// Sets each light in [looks] to its saved look. Lights that are off get
   /// switched on first so the colour change is visible as a smooth fade.
-  Future<void> applyLooks(Map<String, LightLook> looks) {
+  /// [manual] changes switch natural light off; restoring (undo) doesn't.
+  Future<void> applyLooks(Map<String, LightLook> looks, {bool manual = true}) {
     _cancelFadesOn(looks.keys);
+    if (manual) _stopNatural(looks.keys);
     return _each(looks.keys, (id, l) => _applyLook(l, looks[id]!));
   }
 
@@ -550,6 +637,7 @@ class HueHub extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _naturalTimer.cancel();
     store.removeListener(_sync);
     _lifecycle.dispose();
     for (final f in _fades.values) {

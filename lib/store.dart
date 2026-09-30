@@ -18,11 +18,20 @@ class AppStore extends ChangeNotifier {
   List<Preset> _presets = [];
   List<Routine> _routines = [];
   Map<String, DateTime> _lastRuns = {};
+  List<String> _favorites = [];
+  Set<String> _natural = {};
 
   List<SavedLight> get lights => List.unmodifiable(_lights);
   List<LightGroup> get groups => List.unmodifiable(_groups);
   List<Preset> get presets => List.unmodifiable(_presets);
   List<Routine> get routines => List.unmodifiable(_routines);
+
+  /// Favourite light and group ids, in the user's order. Ids that no longer
+  /// exist are skipped.
+  List<String> get favorites => [
+    for (final id in _favorites)
+      if (light(id) != null || group(id) != null) id,
+  ];
 
   static Future<AppStore> load() async {
     final store = AppStore._(await SharedPreferences.getInstance());
@@ -43,6 +52,8 @@ class AppStore extends ChangeNotifier {
       _groups = list('groups').map(LightGroup.fromJson).toList();
       _presets = list('presets').map(Preset.fromJson).toList();
       _routines = list('routines').map(Routine.fromJson).toList();
+      _favorites = [...?(j['favorites'] as List?)?.whereType<String>()];
+      _natural = {...?(j['natural'] as List?)?.whereType<String>()};
       _lastRuns = {};
       for (final e in ((j['lastRuns'] as Map?) ?? const {}).entries) {
         final at = e.value is String
@@ -64,6 +75,8 @@ class AppStore extends ChangeNotifier {
         'groups': [for (final g in _groups) g.toJson()],
         'presets': [for (final p in _presets) p.toJson()],
         'routines': [for (final r in _routines) r.toJson()],
+        'favorites': _favorites,
+        'natural': _natural.toList(),
         'lastRuns': {
           for (final e in _lastRuns.entries) e.key: e.value.toIso8601String(),
         },
@@ -93,6 +106,36 @@ class AppStore extends ChangeNotifier {
 
   DateTime? lastRun(String routineId) => _lastRuns[routineId];
 
+  // --- Favourites
+
+  bool isFavorite(String id) => _favorites.contains(id);
+
+  Future<void> setFavorite(String id, bool favorite) async {
+    _favorites = [..._favorites.where((f) => f != id), if (favorite) id];
+    await _save();
+  }
+
+  /// Moves the favourite at [from] to [to] (indexes into [favorites]).
+  Future<void> moveFavorite(int from, int to) async {
+    final list = favorites;
+    if (from < 0 || from >= list.length) return;
+    final id = list.removeAt(from);
+    list.insert(to.clamp(0, list.length), id);
+    _favorites = list;
+    await _save();
+  }
+
+  // --- Natural light
+
+  /// Whether [lightId]'s white follows the time of day.
+  bool isNatural(String lightId) => _natural.contains(lightId);
+
+  Future<void> setNatural(Iterable<String> lightIds, bool natural) async {
+    final ids = lightIds.toSet();
+    _natural = natural ? {..._natural, ...ids} : _natural.difference(ids);
+    await _save();
+  }
+
   // --- Lights
 
   Future<void> addLight(SavedLight light) async {
@@ -111,6 +154,8 @@ class AppStore extends ChangeNotifier {
   /// presets and routines that only targeted it.
   Future<void> removeLight(String id) async {
     _lights = _lights.where((l) => l.id != id).toList();
+    _favorites = _favorites.where((f) => f != id).toList();
+    _natural = {..._natural}..remove(id);
     _groups = [
       for (final g in _groups)
         g.copyWith(lightIds: g.lightIds.where((l) => l != id).toList()),
@@ -141,6 +186,7 @@ class AppStore extends ChangeNotifier {
 
   Future<void> removeGroup(String id) async {
     _groups = _groups.where((g) => g.id != id).toList();
+    _favorites = _favorites.where((f) => f != id).toList();
     _presets = _presets.where((p) => p.scopeId != id).toList();
     _routines = _routines.where((r) => r.targetId != id).toList();
     await _save();

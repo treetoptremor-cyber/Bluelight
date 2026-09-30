@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../hub.dart';
 import 'common.dart';
 import 'group_edit_page.dart';
+import 'power_on_sheet.dart';
 
 /// The (i) details for one light: status, model, capabilities, groups, id,
 /// rename and remove.
@@ -130,7 +131,15 @@ class _LightInfo extends StatelessWidget {
                   label: 'Bluetooth ID',
                   child: SelectableText(id, style: theme.textTheme.bodySmall),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 8),
+                _Actions(
+                  favorite: store.isFavorite(id),
+                  onFavorite: (v) => store.setFavorite(id, v),
+                  onPowerOn: connected && light!.supportsPowerOn
+                      ? () => showPowerOnSheet(context, [id])
+                      : null,
+                ),
+                const SizedBox(height: 8),
                 OutlinedButton.icon(
                   style: OutlinedButton.styleFrom(
                     foregroundColor: theme.colorScheme.error,
@@ -214,6 +223,15 @@ class _GroupInfo extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                           ),
                   ),
+                const SizedBox(height: 8),
+                _Actions(
+                  favorite: store.isFavorite(id),
+                  onFavorite: (v) => store.setFavorite(id, v),
+                  onPowerOn:
+                      hub.connected(members).any((l) => l.supportsPowerOn)
+                      ? () => showPowerOnSheet(context, members)
+                      : null,
+                ),
                 const SizedBox(height: 12),
                 Row(
                   children: [
@@ -261,6 +279,48 @@ class _GroupInfo extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+/// Favourite toggle and power-on behaviour, shared by both sheets.
+class _Actions extends StatelessWidget {
+  const _Actions({
+    required this.favorite,
+    required this.onFavorite,
+    required this.onPowerOn,
+  });
+
+  final bool favorite;
+  final ValueChanged<bool> onFavorite;
+  final VoidCallback? onPowerOn;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          secondary: Icon(favorite ? Icons.star_rounded : Icons.star_outline),
+          title: const Text('Favourite'),
+          subtitle: const Text('Pinned to the top of the dashboard'),
+          value: favorite,
+          onChanged: onFavorite,
+        ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.power_outlined),
+          title: const Text('Power-on behaviour'),
+          subtitle: Text(
+            onPowerOn == null
+                ? 'Available when connected'
+                : 'What happens after a wall switch or power cut',
+          ),
+          trailing: const Icon(Icons.chevron_right),
+          enabled: onPowerOn != null,
+          onTap: onPowerOn,
+        ),
+      ],
     );
   }
 }

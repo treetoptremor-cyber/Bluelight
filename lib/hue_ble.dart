@@ -45,6 +45,9 @@ abstract final class HueUuids {
   /// Combined light state (TLV, with a fade time). See hue_protocol_ext.dart.
   static final combined = Guid('932c32bd-0007-47a2-835a-a8d455b859dd');
 
+  /// Power-on (startup) state: same TLV as [combined].
+  static final startup = Guid('932c32bd-1005-47a2-835a-a8d455b859dd');
+
   /// On-bulb schedules (wake up / go to sleep).
   static final schedules = Guid('9da2ddf1-0001-44d0-909c-3f3d3cb34a7b');
 
@@ -155,12 +158,16 @@ class HueLightState {
   final XyColor? xy;
   final HueMode? mode;
 
+  /// Running effect, if the bulb reports one.
+  final HueEffect effect;
+
   const HueLightState({
     this.on = false,
     this.brightness = maxBrightness,
     this.mireds,
     this.xy,
     this.mode,
+    this.effect = HueEffect.none,
   });
 
   HueLightState copyWith({
@@ -169,12 +176,14 @@ class HueLightState {
     int? mireds,
     XyColor? xy,
     HueMode? mode,
+    HueEffect? effect,
   }) => HueLightState(
     on: on ?? this.on,
     brightness: brightness ?? this.brightness,
     mireds: mireds ?? this.mireds,
     xy: xy ?? this.xy,
     mode: mode ?? this.mode,
+    effect: effect ?? this.effect,
   );
 
   @override
@@ -184,10 +193,11 @@ class HueLightState {
       other.brightness == brightness &&
       other.mireds == mireds &&
       other.xy == xy &&
-      other.mode == mode;
+      other.mode == mode &&
+      other.effect == effect;
 
   @override
-  int get hashCode => Object.hash(on, brightness, mireds, xy, mode);
+  int get hashCode => Object.hash(on, brightness, mireds, xy, mode, effect);
 
   @override
   String toString() =>
@@ -264,6 +274,7 @@ class HueLight {
   BluetoothCharacteristic? _temperature;
   BluetoothCharacteristic? _color;
   BluetoothCharacteristic? _combined;
+  BluetoothCharacteristic? _startup;
   BluetoothCharacteristic? _schedules;
   BluetoothCharacteristic? _clock;
   StreamSubscription<List<int>>? _scheduleSub;
@@ -380,6 +391,7 @@ class HueLight {
     _temperature = find(HueUuids.temperature);
     _color = find(HueUuids.color);
     _combined = find(HueUuids.combined);
+    _startup = find(HueUuids.startup);
     BluetoothCharacteristic? anywhere(Guid uuid) =>
         [for (final svc in services) ...svc.characteristics]
             .where((c) => c.characteristicUuid == uuid)
@@ -411,7 +423,13 @@ class HueLight {
   /// Turns on notifications (power and brightness first, as they change
   /// most), then reads the name. Never throws: both are nice to have.
   Future<void> _subscribeAndReadInfo(List<BluetoothService> services) async {
-    for (final c in [_power, _brightness, _temperature, _color].nonNulls) {
+    for (final c in [
+      _power,
+      _brightness,
+      _temperature,
+      _color,
+      _combined,
+    ].nonNulls) {
       final sub = c.onValueReceived.listen((v) => _onValue(c, v));
       device.cancelWhenDisconnected(sub);
       _subscriptions.add(sub);
@@ -458,6 +476,8 @@ class HueLight {
       s = s.copyWith(mireds: decodeMireds(value), mode: HueMode.white);
     } else if (uuid == HueUuids.color) {
       s = s.copyWith(xy: decodeXy(value), mode: HueMode.color);
+    } else if (uuid == HueUuids.combined) {
+      s = s.copyWith(effect: decodeCombinedEffect(value) ?? HueEffect.none);
     }
     _emit(s);
   }
@@ -655,6 +675,42 @@ class HueLight {
     }
     if (brightness != null) await setBrightness(brightness);
     if (on == false) await setPower(false);
+  }
+
+  // --- Effects and power-on behaviour
+
+  /// Effects go through the combined characteristic; older firmware may
+  /// refuse them (logged in Diagnostics).
+  bool get supportsEffects => _combined != null;
+
+  /// Starts [effect] (switching the light on), or with [HueEffect.none]
+  /// stops it and restores the current colour or white.
+  Future<void> setEffect(HueEffect effect, {int speed = 128}) async {
+    final c = _require(_combined, 'effects');
+    final s = _state;
+    final bytes = effect == HueEffect.none
+        ? encodeCombinedState(
+            effect: HueEffect.none,
+            xy: s.mode == HueMode.color ? s.xy : null,
+            mireds: s.mode == HueMode.color ? null : s.mireds,
+          )
+        : encodeCombinedState(on: true, effect: effect, effectSpeed: speed);
+    await _write(c, bytes);
+    _emit(
+      effect == HueEffect.none
+          ? s.copyWith(effect: effect)
+          : s.copyWith(on: true, effect: effect),
+    );
+  }
+
+  bool get supportsPowerOn => _startup != null;
+
+  Future<PowerOnState?> readPowerOn() async =>
+      decodePowerOn(await _read(_require(_startup, 'power-on settings')));
+
+  Future<void> writePowerOn(PowerOnState state) async {
+    await _write(_require(_startup, 'power-on settings'), encodePowerOn(state));
+    diag('ble', '${_tag()} power-on set to $state');
   }
 
   // --- On-bulb schedules
