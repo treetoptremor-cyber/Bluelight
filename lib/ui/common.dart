@@ -405,8 +405,9 @@ class _InsetThumb extends SliderComponentShape {
   }
 }
 
-/// A card with a title row and content, used for each control.
-class ControlCard extends StatelessWidget {
+/// A card with a title row and content, used for each control. Tap the
+/// title to collapse it; collapsed cards stay collapsed until the app closes.
+class ControlCard extends StatefulWidget {
   const ControlCard({
     super.key,
     required this.title,
@@ -418,25 +419,86 @@ class ControlCard extends StatelessWidget {
   final Widget? trailing;
   final Widget child;
 
+  static final _collapsed = <String>{};
+
+  @override
+  State<ControlCard> createState() => _ControlCardState();
+}
+
+class _ControlCardState extends State<ControlCard> {
+  bool get _open => !ControlCard._collapsed.contains(widget.title);
+
+  void _toggle() {
+    HapticFeedback.selectionClick();
+    setState(() {
+      if (_open) {
+        ControlCard._collapsed.add(widget.title);
+      } else {
+        ControlCard._collapsed.remove(widget.title);
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final open = _open;
     return Card(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Row(
               children: [
                 Expanded(
-                  child: Text(title, style: theme.textTheme.titleMedium),
+                  child: Semantics(
+                    button: true,
+                    expanded: open,
+                    label: widget.title,
+                    excludeSemantics: true,
+                    onTap: _toggle,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: _toggle,
+                      child: SizedBox(
+                        height: 48,
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                widget.title,
+                                style: theme.textTheme.titleMedium,
+                              ),
+                            ),
+                            AnimatedRotation(
+                              turns: open ? 0 : -0.25,
+                              duration: const Duration(milliseconds: 200),
+                              child: Icon(
+                                Icons.expand_more,
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
-                ?trailing,
+                ?widget.trailing,
               ],
             ),
-            const SizedBox(height: 10),
-            child,
+            AnimatedSize(
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOutCubic,
+              alignment: Alignment.topCenter,
+              child: open
+                  ? Padding(
+                      padding: const EdgeInsets.only(top: 2, bottom: 12),
+                      child: widget.child,
+                    )
+                  : const SizedBox(width: double.infinity),
+            ),
           ],
         ),
       ),

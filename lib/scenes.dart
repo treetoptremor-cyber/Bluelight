@@ -54,10 +54,11 @@ int xyToMireds(XyColor xy) {
 /// just get the brightness.
 Map<String, LightLook> sceneLooks(
   HueScene scene,
-  Map<String, LightAbilities> lights,
-) {
+  Map<String, LightAbilities> lights, {
+  int offset = 0,
+}) {
   final out = <String, LightLook>{};
-  var i = 0;
+  var i = offset;
   for (final e in lights.entries) {
     final c = scene.colors[i++ % scene.colors.length];
     final can = e.value;

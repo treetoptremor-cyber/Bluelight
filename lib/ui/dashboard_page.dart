@@ -86,22 +86,25 @@ class DashboardPage extends StatelessWidget {
                         duration: const Duration(milliseconds: 300),
                         child: KeyedSubtree(
                           key: ValueKey(design),
-                          child: switch (design) {
-                            AppDesign.clear => _ListLayout(nav, dense: false),
-                            AppDesign.wireframe => _ListLayout(
-                              nav,
-                              dense: true,
-                            ),
-                            AppDesign.glow => _GlowLayout(
-                              nav,
-                              lightsOn: lightsOn,
-                            ),
-                            AppDesign.rooms => _RoomsLayout(nav),
-                            AppDesign.lumen => _LumenLayout(
-                              nav,
-                              lightsOn: lightsOn,
-                            ),
-                          },
+                          child: ValueListenableBuilder<Set<String>>(
+                            valueListenable: _collapsed,
+                            builder: (context, _, _) => switch (design) {
+                              AppDesign.clear => _ListLayout(nav, dense: false),
+                              AppDesign.wireframe => _ListLayout(
+                                nav,
+                                dense: true,
+                              ),
+                              AppDesign.glow => _GlowLayout(
+                                nav,
+                                lightsOn: lightsOn,
+                              ),
+                              AppDesign.rooms => _RoomsLayout(nav),
+                              AppDesign.lumen => _LumenLayout(
+                                nav,
+                                lightsOn: lightsOn,
+                              ),
+                            },
+                          ),
                         ),
                       ),
                     ),
@@ -195,6 +198,15 @@ class _Nav {
     }
   }
 
+  Future<void> allOn() async {
+    HapticFeedback.mediumImpact();
+    try {
+      await hub.setPower([for (final l in store.lights) l.id], true);
+    } catch (e) {
+      if (context.mounted) showError(context, e);
+    }
+  }
+
   Future<void> allOff() async {
     HapticFeedback.mediumImpact();
     final Map<String, LightLook> before;
@@ -264,32 +276,36 @@ class _ListLayout extends StatelessWidget {
           SliverToBoxAdapter(
             child: Padding(padding: pad, child: _Header('Favourites', dense)),
           ),
-          SliverPadding(
-            padding: pad,
-            sliver: SliverReorderableList(
-              itemCount: favorites.length,
-              onReorderStart: (_) => HapticFeedback.mediumImpact(),
-              onReorderItem: nav.store.moveFavorite,
-              proxyDecorator: (child, _, animation) => Material(
-                color: Colors.transparent,
-                elevation: 6 * animation.value,
-                borderRadius: BorderRadius.circular(20),
-                child: child,
-              ),
-              itemBuilder: (context, i) => ReorderableDelayedDragStartListener(
-                key: ValueKey('fav-${favorites[i]}'),
-                index: i,
-                child: row(favorites[i]),
+          if (!_isCollapsed('sec:Favourites'))
+            SliverPadding(
+              padding: pad,
+              sliver: SliverReorderableList(
+                itemCount: favorites.length,
+                onReorderStart: (_) => HapticFeedback.mediumImpact(),
+                onReorderItem: nav.store.moveFavorite,
+                proxyDecorator: (child, _, animation) => Material(
+                  color: Colors.transparent,
+                  elevation: 6 * animation.value,
+                  borderRadius: BorderRadius.circular(20),
+                  child: child,
+                ),
+                itemBuilder: (context, i) =>
+                    ReorderableDelayedDragStartListener(
+                      key: ValueKey('fav-${favorites[i]}'),
+                      index: i,
+                      child: row(favorites[i]),
+                    ),
               ),
             ),
-          ),
         ],
         SliverPadding(
           padding: pad.copyWith(bottom: 24),
           sliver: SliverList.list(
             children: [
               _Header('Groups', dense),
-              if (groups.isEmpty && nav.store.groups.isEmpty)
+              if (groups.isEmpty &&
+                  nav.store.groups.isEmpty &&
+                  !_isCollapsed('sec:Groups'))
                 Padding(
                   padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
                   child: Text(
@@ -299,9 +315,11 @@ class _ListLayout extends StatelessWidget {
                     ),
                   ),
                 ),
-              for (final id in groups) row(id),
+              if (!_isCollapsed('sec:Groups'))
+                for (final id in groups) row(id),
               _Header('Lights', dense),
-              for (final id in lights) row(id),
+              if (!_isCollapsed('sec:Lights'))
+                for (final id in lights) row(id),
             ],
           ),
         ),
@@ -428,7 +446,7 @@ class _GlowLayout extends StatelessWidget {
       sliver: SliverMainAxisGroup(
         slivers: [
           SliverToBoxAdapter(child: _Header(title, false)),
-          grid(ids),
+          if (!_isCollapsed('sec:$title')) grid(ids),
         ],
       ),
     );
@@ -607,15 +625,18 @@ class _RoomsLayout extends StatelessWidget {
           ),
         if (loose.isNotEmpty) ...[
           _Header(groups.isEmpty ? 'Lights' : 'Other lights', false),
-          GridView.count(
-            crossAxisCount: 2,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            mainAxisSpacing: 10,
-            crossAxisSpacing: 10,
-            childAspectRatio: 1.35,
-            children: [for (final id in loose) _MiniCard(nav, id)],
-          ),
+          if (!_isCollapsed(
+            'sec:${groups.isEmpty ? 'Lights' : 'Other lights'}',
+          ))
+            GridView.count(
+              crossAxisCount: 2,
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              mainAxisSpacing: 10,
+              crossAxisSpacing: 10,
+              childAspectRatio: 1.35,
+              children: [for (final id in loose) _MiniCard(nav, id)],
+            ),
         ],
       ],
     );
@@ -691,53 +712,64 @@ class _RoomCardState extends State<_RoomCard> {
                   icon: const Icon(Icons.info_outline),
                   onPressed: () => nav.info(id),
                 ),
+                IconButton(
+                  tooltip: _isCollapsed('room:$id') ? 'Expand' : 'Collapse',
+                  icon: AnimatedRotation(
+                    turns: _isCollapsed('room:$id') ? -0.25 : 0,
+                    duration: const Duration(milliseconds: 200),
+                    child: const Icon(Icons.expand_more),
+                  ),
+                  onPressed: () => _toggleCollapsed('room:$id'),
+                ),
                 Switch(
                   value: on,
                   onChanged: connected ? (v) => nav.toggle(id, v) : null,
                 ),
               ],
             ),
-            const SizedBox(height: 6),
-            ListenableBuilder(
-              listenable: _brightness,
-              builder: (context, _) => FatSlider(
-                semanticLabel: '${nav.store.nameOf(id)} brightness',
-                enabled: connected,
-                value:
-                    _brightness.shown ??
-                    (lit?.state.brightness ?? maxBrightness).toDouble(),
-                min: minBrightness.toDouble(),
-                max: maxBrightness.toDouble(),
-                gradient: LinearGradient(colors: [dimmed(c, 1), c]),
-                dragging: _brightness.dragging,
-                onChangeStart: (v) {
-                  if (!on) nav.toggle(id, true);
-                  _brightness.start(v);
-                },
-                onChanged: _brightness.update,
-                onChangeEnd: _brightness.end,
+            if (!_isCollapsed('room:$id')) ...[
+              const SizedBox(height: 6),
+              ListenableBuilder(
+                listenable: _brightness,
+                builder: (context, _) => FatSlider(
+                  semanticLabel: '${nav.store.nameOf(id)} brightness',
+                  enabled: connected,
+                  value:
+                      _brightness.shown ??
+                      (lit?.state.brightness ?? maxBrightness).toDouble(),
+                  min: minBrightness.toDouble(),
+                  max: maxBrightness.toDouble(),
+                  gradient: LinearGradient(colors: [dimmed(c, 1), c]),
+                  dragging: _brightness.dragging,
+                  onChangeStart: (v) {
+                    if (!on) nav.toggle(id, true);
+                    _brightness.start(v);
+                  },
+                  onChanged: _brightness.update,
+                  onChangeEnd: _brightness.end,
+                ),
               ),
-            ),
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final lightId in ids)
-                  ActionChip(
-                    avatar: LightDot(
-                      color: nav.connected(lightId)
-                          ? (nav.color(lightId) ??
-                                theme.colorScheme.surfaceContainerHighest)
-                          : null,
-                      on: nav.isOn(lightId),
-                      size: 12,
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final lightId in ids)
+                    ActionChip(
+                      avatar: LightDot(
+                        color: nav.connected(lightId)
+                            ? (nav.color(lightId) ??
+                                  theme.colorScheme.surfaceContainerHighest)
+                            : null,
+                        on: nav.isOn(lightId),
+                        size: 12,
+                      ),
+                      label: Text(nav.store.nameOf(lightId)),
+                      onPressed: () => nav.open(lightId),
                     ),
-                    label: Text(nav.store.nameOf(lightId)),
-                    onPressed: () => nav.open(lightId),
-                  ),
-              ],
-            ),
+                ],
+              ),
+            ],
           ],
         ),
       ),
@@ -851,33 +883,51 @@ class _LumenLayout extends StatelessWidget {
             ),
           ),
           for (final (title, ids) in rails)
-            Expanded(
+            Flexible(
+              flex: _isCollapsed('sec:$title') ? 0 : 1,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 6),
-                    child: Text(
-                      title.toUpperCase(),
-                      style: theme.textTheme.labelLarge?.copyWith(
-                        color: Colors.white.withValues(alpha: 0.85),
-                        letterSpacing: 1.4,
-                        fontWeight: FontWeight.w700,
+                  InkWell(
+                    onTap: () => _toggleCollapsed('sec:$title'),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 8, 20, 8),
+                      child: Row(
+                        children: [
+                          Text(
+                            title.toUpperCase(),
+                            style: theme.textTheme.labelLarge?.copyWith(
+                              color: Colors.white.withValues(alpha: 0.85),
+                              letterSpacing: 1.4,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          AnimatedRotation(
+                            turns: _isCollapsed('sec:$title') ? -0.25 : 0,
+                            duration: const Duration(milliseconds: 200),
+                            child: Icon(
+                              Icons.expand_more,
+                              size: 20,
+                              color: Colors.white.withValues(alpha: 0.85),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
-                  Expanded(
-                    child: ListView.separated(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-                      itemCount: ids.length,
-                      separatorBuilder: (_, _) => const SizedBox(width: 12),
-                      itemBuilder: (context, i) => SizedBox(
-                        width: 100,
-                        child: _Pillar(nav, ids[i], key: ValueKey(ids[i])),
+                  if (!_isCollapsed('sec:$title'))
+                    Expanded(
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                        itemCount: ids.length,
+                        separatorBuilder: (_, _) => const SizedBox(width: 12),
+                        itemBuilder: (context, i) => SizedBox(
+                          width: 100,
+                          child: _Pillar(nav, ids[i], key: ValueKey(ids[i])),
+                        ),
                       ),
                     ),
-                  ),
                 ],
               ),
             ),
@@ -1219,9 +1269,13 @@ class _MasterBarState extends State<_MasterBar> {
                   borderRadius: BorderRadius.circular(wire ? 8 : 26),
                 ),
               ),
-              onPressed: connected ? nav.allOff : null,
-              icon: const Icon(Icons.power_settings_new),
-              label: const Text('All off'),
+              onPressed: connected
+                  ? (lit.isEmpty ? nav.allOn : nav.allOff)
+                  : null,
+              icon: Icon(
+                lit.isEmpty ? Icons.lightbulb : Icons.power_settings_new,
+              ),
+              label: Text(lit.isEmpty ? 'All on' : 'All off'),
             ),
           ),
         ],
@@ -1294,6 +1348,19 @@ class _BottomBar extends StatelessWidget {
   }
 }
 
+/// Which dashboard sections and room cards are collapsed. Lives for the
+/// app session, shared by every design.
+final _collapsed = ValueNotifier<Set<String>>({});
+
+bool _isCollapsed(String key) => _collapsed.value.contains(key);
+
+void _toggleCollapsed(String key) {
+  HapticFeedback.selectionClick();
+  final next = {..._collapsed.value};
+  if (!next.remove(key)) next.add(key);
+  _collapsed.value = next;
+}
+
 class _Header extends StatelessWidget {
   const _Header(this.title, this.dense);
 
@@ -1303,14 +1370,37 @@ class _Header extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
-      padding: EdgeInsets.fromLTRB(6, dense ? 12 : 18, 6, 6),
-      child: Text(
-        dense ? title.toUpperCase() : title,
-        style: theme.textTheme.titleSmall?.copyWith(
-          letterSpacing: dense ? 1.2 : 0.3,
-          fontWeight: FontWeight.w700,
-          color: theme.colorScheme.onSurfaceVariant,
+    final key = 'sec:$title';
+    final collapsed = _isCollapsed(key);
+    final color = theme.colorScheme.onSurfaceVariant;
+    return Semantics(
+      button: true,
+      expanded: !collapsed,
+      label: title,
+      excludeSemantics: true,
+      onTap: () => _toggleCollapsed(key),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: () => _toggleCollapsed(key),
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(6, dense ? 12 : 18, 6, 6),
+          child: Row(
+            children: [
+              Text(
+                dense ? title.toUpperCase() : title,
+                style: theme.textTheme.titleSmall?.copyWith(
+                  letterSpacing: dense ? 1.2 : 0.3,
+                  fontWeight: FontWeight.w700,
+                  color: color,
+                ),
+              ),
+              AnimatedRotation(
+                turns: collapsed ? -0.25 : 0,
+                duration: const Duration(milliseconds: 200),
+                child: Icon(Icons.expand_more, size: 20, color: color),
+              ),
+            ],
+          ),
         ),
       ),
     );

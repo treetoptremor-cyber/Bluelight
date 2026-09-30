@@ -71,7 +71,7 @@ void main() {
     expect(find.text('Ceiling'), findsOneWidget);
     // Dim-all slider sits with All off at the top.
     expect(find.bySemanticsLabel('Dim all lights'), findsOneWidget);
-    expect(find.widgetWithText(FilledButton, 'All off'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'All on'), findsOneWidget);
     expect(find.text('Office'), findsOneWidget);
     // One (i) per group and light; switches disabled until connected.
     expect(find.byTooltip('Details'), findsNWidgets(3));
@@ -144,6 +144,24 @@ void main() {
         );
       }
     }
+  });
+
+  testWidgets('dashboard sections collapse', (tester) async {
+    await tester.runAsync(() async {
+      await _pumpApp(
+        tester,
+        seed: (s) =>
+            s.addLight(const SavedLight(id: 'AA:BB', name: 'Desk lamp')),
+      );
+    });
+    await tester.pump();
+    expect(find.text('Desk lamp'), findsOneWidget);
+    await tester.tap(find.text('Lights').first);
+    await tester.pumpAndSettle();
+    expect(find.text('Desk lamp'), findsNothing);
+    await tester.tap(find.text('Lights').first);
+    await tester.pumpAndSettle();
+    expect(find.text('Desk lamp'), findsOneWidget);
   });
 
   testWidgets('FatSlider reports start, changes and end', (tester) async {

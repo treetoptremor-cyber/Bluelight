@@ -373,6 +373,11 @@ class HueHub extends ChangeNotifier {
           mireds: target,
           transition: const Duration(seconds: 50),
         );
+        diag(
+          'natural',
+          '${store.nameOf(id)}: ${s.mireds ?? '?'} -> $target mireds '
+              '(${naturalKelvin(DateTime.now()).round()} K)',
+        );
       } catch (e) {
         diag('natural', '${store.nameOf(id)}: $e');
       }
@@ -441,23 +446,66 @@ class HueHub extends ChangeNotifier {
     return _each(looks.keys, (id, l) => _applyLook(l, looks[id]!));
   }
 
+  Map<String, LightAbilities> _abilities(Iterable<String> ids) => {
+    for (final id in ids)
+      if (lightOf(id) case final l? when statusOf(id) == LinkStatus.connected)
+        id: LightAbilities(
+          color: l.supportsColor,
+          white: l.supportsTemperature,
+        ),
+  };
+
   /// Applies [scene] across the connected lights among [ids].
-  Future<void> applyScene(Iterable<String> ids, HueScene scene) {
-    final lights = {
-      for (final id in ids)
-        if (lightOf(id) case final l? when statusOf(id) == LinkStatus.connected)
-          id: LightAbilities(
-            color: l.supportsColor,
-            white: l.supportsTemperature,
-          ),
-    };
-    return applyLooks(sceneLooks(scene, lights));
+  Future<void> applyScene(Iterable<String> ids, HueScene scene) =>
+      applyLooks(sceneLooks(scene, _abilities(ids)));
+
+  // --- Dynamic scenes
+
+  Timer? _dynamicTimer;
+  Set<String> _dynamicIds = {};
+  String? _dynamicScene;
+
+  /// The scene currently playing dynamically, if any.
+  String? get playingScene => _dynamicScene;
+
+  /// Like the Hue app's play button: applies [scene], then keeps handing
+  /// its colours round the lights with slow fades until something else
+  /// changes them.
+  Future<void> playScene(Iterable<String> ids, HueScene scene) async {
+    final list = ids.toList();
+    await applyScene(list, scene);
+    if (scene.colors.length < 2) return;
+    _dynamicIds = list.toSet();
+    _dynamicScene = scene.name;
+    var step = 0;
+    _dynamicTimer = Timer.periodic(const Duration(seconds: 25), (_) {
+      step++;
+      final looks = sceneLooks(scene, _abilities(_dynamicIds), offset: step);
+      _each(
+        looks.keys,
+        (id, l) =>
+            _applyLook(l, looks[id]!, glide: const Duration(seconds: 15)),
+      ).catchError((Object e) => diag('scene', '${scene.name}: $e'));
+    });
+    _notify();
+  }
+
+  void _stopDynamic([Iterable<String>? ids]) {
+    if (_dynamicTimer == null) return;
+    if (ids != null && !ids.any(_dynamicIds.contains)) return;
+    _dynamicTimer!.cancel();
+    _dynamicTimer = null;
+    _dynamicScene = null;
+    _notify();
   }
 
   /// One combined write per light where the bulb supports it, with a short
   /// fade so preset changes glide.
-  Future<void> _applyLook(HueLight l, LightLook look) async {
-    const glide = Duration(milliseconds: 600);
+  Future<void> _applyLook(
+    HueLight l,
+    LightLook look, {
+    Duration glide = const Duration(milliseconds: 600),
+  }) async {
     if (!look.on) {
       await l.setLook(on: false, transition: glide);
       return;
@@ -639,6 +687,7 @@ class HueHub extends ChangeNotifier {
   }
 
   void _cancelFadesOn(Iterable<String> lightIds) {
+    _stopDynamic(lightIds);
     final ids = lightIds.toSet();
     final hit = [
       for (final e in _fades.entries)
@@ -656,6 +705,7 @@ class HueHub extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _naturalTimer.cancel();
+    _dynamicTimer?.cancel();
     store.removeListener(_sync);
     _lifecycle.dispose();
     for (final f in _fades.values) {

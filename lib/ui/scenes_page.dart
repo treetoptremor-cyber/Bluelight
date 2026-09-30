@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -23,12 +25,18 @@ Gradient sceneGradient(HueScene s) {
 Future<void> applyScene(
   BuildContext context,
   String targetId,
-  HueScene scene,
-) async {
+  HueScene scene, {
+  bool play = false,
+}) async {
   final app = AppScope.of(context);
   HapticFeedback.lightImpact();
   try {
-    await app.hub.applyScene(app.store.lightIdsFor(targetId), scene);
+    final ids = app.store.lightIdsFor(targetId);
+    if (play) {
+      await app.hub.playScene(ids, scene);
+    } else {
+      await app.hub.applyScene(ids, scene);
+    }
   } catch (e) {
     if (context.mounted) showError(context, e);
     return;
@@ -38,7 +46,7 @@ Future<void> applyScene(
     ..hideCurrentSnackBar()
     ..showSnackBar(
       SnackBar(
-        content: Text(scene.name),
+        content: Text(play ? '${scene.name} · playing' : scene.name),
         duration: const Duration(seconds: 3),
         action: SnackBarAction(
           label: 'Save as preset',
@@ -102,6 +110,8 @@ class ScenesPage extends StatelessWidget {
                 itemBuilder: (context, i) => SceneTile(
                   scene: e.value[i],
                   onTap: () => applyScene(context, targetId, e.value[i]),
+                  onPlay: () =>
+                      applyScene(context, targetId, e.value[i], play: true),
                 ),
               ),
             ),
@@ -113,44 +123,124 @@ class ScenesPage extends StatelessWidget {
   }
 }
 
-/// A rounded tile painted with the scene's palette and its name.
+/// Soft, blurred colour fields built from a scene's palette, so each scene
+/// gets its own picture. The layout is seeded by the scene's name.
+class SceneArtPainter extends CustomPainter {
+  SceneArtPainter(this.scene)
+    : _colors = [for (final c in scene.colors) sceneColor(c)];
+
+  final HueScene scene;
+  final List<Color> _colors;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final base = _colors.reduce((a, b) => Color.lerp(a, b, 0.5)!);
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()..color = Color.lerp(base, Colors.black, 0.45)!,
+    );
+    var seed = scene.name.codeUnits.fold<int>(
+      7,
+      (h, c) => (h * 31 + c) & 0x7fffffff,
+    );
+    double next() {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    }
+
+    final blobs = _colors.length == 1 ? 3 : _colors.length + 2;
+    for (var i = 0; i < blobs; i++) {
+      final c = _colors[i % _colors.length];
+      final r = size.shortestSide * (0.55 + next() * 0.5);
+      final center = Offset(
+        size.width * (0.05 + next() * 0.9),
+        size.height * (0.05 + next() * 0.9),
+      );
+      canvas.drawCircle(
+        center,
+        r,
+        Paint()
+          ..color = c.withValues(alpha: 0.85)
+          ..maskFilter = ui.MaskFilter.blur(BlurStyle.normal, r * 0.55),
+      );
+    }
+    // A little light from above, like a lit wall.
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()
+        ..shader = ui.Gradient.linear(Offset.zero, Offset(0, size.height), [
+          Colors.white.withValues(alpha: 0.12),
+          Colors.black.withValues(alpha: 0.28),
+        ]),
+    );
+  }
+
+  @override
+  bool shouldRepaint(SceneArtPainter old) => old.scene != scene;
+}
+
+/// A rounded tile with the scene's generated picture and its name. The play
+/// button (for scenes with several colours) keeps the colours drifting
+/// between the lights, like the Hue app's dynamic scenes.
 class SceneTile extends StatelessWidget {
-  const SceneTile({super.key, required this.scene, required this.onTap});
+  const SceneTile({
+    super.key,
+    required this.scene,
+    required this.onTap,
+    this.onPlay,
+  });
 
   final HueScene scene;
   final VoidCallback onTap;
+  final VoidCallback? onPlay;
 
   @override
   Widget build(BuildContext context) {
-    final avg = Color.lerp(
-      sceneColor(scene.colors.first),
-      sceneColor(scene.colors.last),
-      0.5,
-    )!;
-    final dark = ThemeData.estimateBrightnessForColor(avg) == Brightness.dark;
     return Material(
       borderRadius: BorderRadius.circular(18),
       clipBehavior: Clip.antiAlias,
-      child: Ink(
-        decoration: BoxDecoration(gradient: sceneGradient(scene)),
-        child: InkWell(
-          onTap: onTap,
-          child: Align(
-            alignment: Alignment.bottomLeft,
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Text(
-                scene.name,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  color: dark ? Colors.white : Colors.black87,
-                  fontWeight: FontWeight.w600,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          RepaintBoundary(child: CustomPaint(painter: SceneArtPainter(scene))),
+          Positioned.fill(
+            child: InkWell(
+              onTap: onTap,
+              child: Align(
+                alignment: Alignment.bottomLeft,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 48, 12),
+                  child: Text(
+                    scene.name,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                      shadows: const [
+                        Shadow(blurRadius: 6, color: Color(0x99000000)),
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ),
           ),
-        ),
+          if (onPlay != null && scene.colors.length > 1)
+            Positioned(
+              right: 4,
+              bottom: 4,
+              child: IconButton(
+                tooltip: 'Play ${scene.name}',
+                onPressed: onPlay,
+                style: IconButton.styleFrom(
+                  backgroundColor: Colors.black38,
+                  foregroundColor: Colors.white,
+                ),
+                icon: const Icon(Icons.play_arrow_rounded),
+              ),
+            ),
+        ],
       ),
     );
   }
