@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../hub.dart';
+import '../hue_ble.dart';
+import '../hue_protocol_ext.dart';
 import 'common.dart';
 import 'group_edit_page.dart';
 import 'power_on_sheet.dart';
@@ -118,9 +120,24 @@ class _LightInfo extends StatelessWidget {
                 if (connected && light!.supportsSchedules)
                   _Row(
                     label: 'On the bulb',
-                    child: Text(
-                      '${AppScope.of(context).scheduler?.armedCount(id) ?? 0} '
-                      'upcoming routine runs stored',
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '${AppScope.of(context).scheduler?.armedCount(id) ?? 0} '
+                            'upcoming routine runs stored',
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () => showModalBottomSheet<void>(
+                            context: context,
+                            showDragHandle: true,
+                            isScrollControlled: true,
+                            builder: (_) => _BulbSchedules(id),
+                          ),
+                          child: const Text('View'),
+                        ),
+                      ],
                     ),
                   ),
                 _Row(
@@ -279,6 +296,131 @@ class _GroupInfo extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+/// The schedules actually stored on a bulb, read back live, with a button
+/// to re-sync this app's routines onto it.
+class _BulbSchedules extends StatefulWidget {
+  const _BulbSchedules(this.lightId);
+
+  final String lightId;
+
+  @override
+  State<_BulbSchedules> createState() => _BulbSchedulesState();
+}
+
+class _BulbSchedulesState extends State<_BulbSchedules> {
+  List<StoredSchedule>? _items;
+  String? _error;
+  bool _busy = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_items == null && _error == null && !_busy) _load();
+  }
+
+  Future<void> _load() async {
+    final light = AppScope.of(context).hub.lightOf(widget.lightId);
+    setState(() => _busy = true);
+    try {
+      if (light == null) throw StateError('Not connected');
+      final items = <StoredSchedule>[];
+      for (final id in await light.listSchedules()) {
+        final s = await light.readSchedule(id);
+        if (s != null) items.add(s);
+      }
+      items.sort((a, b) => a.start.compareTo(b.start));
+      if (mounted) setState(() => _items = items);
+    } catch (e) {
+      if (mounted) setState(() => _error = describeBleError(e));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _sync() async {
+    final scheduler = AppScope.of(context).scheduler;
+    setState(() {
+      _busy = true;
+      _items = null;
+      _error = null;
+    });
+    await scheduler?.arm(widget.lightId);
+    if (mounted) await _load();
+  }
+
+  String _describe(BuildContext context, StoredSchedule s) {
+    String time(DateTime t) {
+      final now = DateTime.now();
+      final day = DateTime(
+        t.year,
+        t.month,
+        t.day,
+      ).difference(DateTime(now.year, now.month, now.day)).inDays;
+      final when = switch (day) {
+        0 => 'Today',
+        1 => 'Tomorrow',
+        _ => '${t.day}/${t.month}',
+      };
+      return '$when ${TimeOfDay.fromDateTime(t).format(context)}';
+    }
+
+    final fade = s.fade.inMinutes > 0 ? ', ${s.fade.inMinutes} min fade' : '';
+    final what = s.wake
+        ? 'On by ${time(s.at)}$fade'
+        : 'Off from ${time(s.start)}$fade';
+    if (s.ran) return '$what (ran)';
+    return s.enabled ? what : '$what (disabled)';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final items = _items;
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('Stored on this bulb', style: theme.textTheme.titleLarge),
+            const SizedBox(height: 4),
+            Text(
+              'What the bulb will run by itself, even with the app closed. '
+              'Ours start with "HBR"; others come from the Hue app.',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            if (_busy) const LinearProgressIndicator(),
+            if (_error != null)
+              Text(_error!, style: TextStyle(color: theme.colorScheme.error)),
+            if (items != null && items.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: Text('No schedules stored on this bulb.'),
+              ),
+            for (final s in items ?? const <StoredSchedule>[])
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(
+                  s.wake ? Icons.wb_sunny_outlined : Icons.bedtime_outlined,
+                ),
+                title: Text(s.title.isEmpty ? 'Schedule ${s.id}' : s.title),
+                subtitle: Text(_describe(context, s)),
+              ),
+            const SizedBox(height: 8),
+            FilledButton.tonalIcon(
+              onPressed: _busy ? null : _sync,
+              icon: const Icon(Icons.sync),
+              label: const Text('Sync routines to this bulb now'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

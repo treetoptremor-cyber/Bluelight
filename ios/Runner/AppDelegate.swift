@@ -25,6 +25,19 @@ import UIKit
           HueShared.reloadWidgets()
         }
         result(nil)
+      case "beginBackgroundTask":
+        // Lets the app finish syncing routines to the bulbs after the user
+        // locks the phone (iOS allows ~30 s).
+        var id: UIBackgroundTaskIdentifier = .invalid
+        id = UIApplication.shared.beginBackgroundTask(withName: "hue-sync") {
+          UIApplication.shared.endBackgroundTask(id)
+        }
+        result(id.rawValue)
+      case "endBackgroundTask":
+        if let raw = call.arguments as? Int {
+          UIApplication.shared.endBackgroundTask(UIBackgroundTaskIdentifier(rawValue: raw))
+        }
+        result(nil)
       default:
         result(FlutterMethodNotImplemented)
       }

@@ -190,5 +190,73 @@ void main() {
       );
       expect(ScheduleReply.parse([0x09]), isNull);
     });
+
+    test('parses a read-back of what we store', () {
+      for (final kind in BulbScheduleKind.values) {
+        final payload = buildSchedulePayload(
+          kind: kind,
+          at: at,
+          fade: const Duration(minutes: 15),
+          title: 'HBR Evening',
+          uuid: uuid,
+        );
+        // 02 00 <id> <len> .. .. .. <body = payload from byte 3>
+        final body = payload.sublist(3);
+        final readback = [
+          0x02,
+          0x00,
+          0x2a,
+          0x00,
+          body.length,
+          0,
+          0,
+          0,
+          ...body,
+        ];
+        final s = parseScheduleReadback(readback)!;
+        expect(s.id, 42);
+        expect(s.title, 'HBR Evening');
+        expect(s.wake, kind == BulbScheduleKind.wake);
+        expect(s.fade, const Duration(minutes: 15));
+        expect(s.enabled, isTrue);
+        expect(s.at.toUtc(), at, reason: '$kind set time');
+      }
+      // A read-back one byte shorter before the title (as the reference
+      // decoder's offsets suggest) still yields the title.
+      final p = buildSchedulePayload(
+        kind: BulbScheduleKind.sleep,
+        at: at,
+        fade: Duration.zero,
+        title: 'Go to sleep',
+        uuid: uuid,
+      );
+      final shorter = [...p.sublist(3, 47), ...p.sublist(48)];
+      final rb = [0x02, 0x00, 0x07, 0x00, shorter.length, 0, 0, 0, ...shorter];
+      expect(parseScheduleReadback(rb)!.title, 'Go to sleep');
+      expect(parseScheduleReadback([0x02, 0x00, 0x01]), isNull);
+    });
+
+    test('parses a real read-back from a bulb (a routine that ran)', () {
+      // Kitchen 1, schedule 4: "HBR Lights off", sleep at 19:01, fired.
+      const hexText =
+          '02 00 04 00 3e 00 00 00 00 00 01 2c 43 bc 6a 00 0e 01 01 00 02 01 '
+          '01 03 02 4c 02 05 02 00 00 26 01 37 ac b4 28 c1 1c 07 b3 67 29 ee '
+          '6f ae 85 db d1 01 ff ff ff ff 0e 48 42 52 20 4c 69 67 68 74 73 20 '
+          '6f 66 66 01';
+      final bytes = [
+        for (final b in hexText.split(' ')) int.parse(b, radix: 16),
+      ];
+      final s = parseScheduleReadback(bytes)!;
+      expect(s.id, 4);
+      expect(s.title, 'HBR Lights off');
+      expect(s.wake, isFalse);
+      expect(s.fade, Duration.zero);
+      expect(s.ran, isTrue);
+      expect(s.enabled, isFalse);
+      expect(
+        s.start.toUtc(),
+        DateTime.fromMillisecondsSinceEpoch(0x6abc432c * 1000, isUtc: true),
+      );
+    });
   });
 }

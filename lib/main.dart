@@ -16,6 +16,12 @@ Future<void> main() async {
   final store = await AppStore.load();
   final hub = HueHub(store);
   final scheduler = BulbScheduler(store, hub);
+  // Locking the phone right after saving a routine must not cut the sync
+  // to the bulbs short.
+  hub.beforeRelease = () async {
+    if (scheduler.syncing) diag('app', 'background: finishing routine sync');
+    await scheduler.idle();
+  };
   final runner = RoutineRunner(store, hub, scheduler: scheduler);
   WidgetBridge(store, hub);
   runApp(

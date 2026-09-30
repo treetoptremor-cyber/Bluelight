@@ -29,11 +29,17 @@ class Diagnostics extends ChangeNotifier {
       _file = File('${dir.path}/$_fileName');
       if (await _file!.exists()) {
         final old = await _file!.readAsLines();
-        _lines.insertAll(0, old.skip(old.length - _maxLines ~/ 2));
+        // Keep the tail of the previous run (skip() must not go negative).
+        final keep = _maxLines ~/ 2;
+        _lines.insertAll(
+          0,
+          old.skip(old.length > keep ? old.length - keep : 0),
+        );
       }
       log('app', 'started');
-    } catch (_) {
+    } catch (e) {
       _file = null;
+      debugPrint('diagnostics: file logging off: $e');
     }
   }
 

@@ -340,3 +340,72 @@ class ScheduleDone extends ScheduleReply {
   const ScheduleDone(this.id);
   final int id;
 }
+
+/// A schedule as stored on a bulb (from a read-back).
+class StoredSchedule {
+  const StoredSchedule({
+    required this.id,
+    required this.title,
+    required this.start,
+    required this.wake,
+    required this.fade,
+    required this.enabled,
+    this.ran = false,
+  });
+
+  /// The bulb marks a schedule as run (and disables it) once it fires.
+  final bool ran;
+
+  final int id;
+  final String title;
+
+  /// When the bulb starts acting: a wake schedule's fade start, a sleep
+  /// schedule's set time.
+  final DateTime start;
+
+  /// Wake (fade in, switch on) vs sleep (fade out, switch off).
+  final bool wake;
+  final Duration fade;
+  final bool enabled;
+
+  /// A wake schedule's set time (fade finished).
+  DateTime get at => wake ? start.add(fade) : start;
+}
+
+/// Parses a `02 00 <id> <len> .. .. .. <body>` read-back notification. The
+/// body is the create payload from its 4th byte on, so write-payload offset
+/// k is body offset k-3.
+StoredSchedule? parseScheduleReadback(List<int> v) {
+  if (v.length < 8 || v[0] != ScheduleOp.read || v[1] != 0x00) return null;
+  final id = v[2] | (v[3] << 8);
+  final len = v[4];
+  if (v.length < 8 + len) return null;
+  final body = v.sublist(8, 8 + len);
+  int at(int payloadOffset) => body[payloadOffset - 3];
+  if (body.length < 50 - 3) return null;
+  final t = at(6) | (at(7) << 8) | (at(8) << 16) | (at(9) << 24);
+  final fadeDs = at(24) | (at(25) << 8);
+  // Both layouts end `<title length> <title> <enabled>`, but read-backs
+  // seem one byte shorter than create payloads before the title (the
+  // reference decoder reads it at 48, the builder writes it at 49), so find
+  // the title from the end.
+  var title = '';
+  for (var n = 0; n <= 64 && n + 2 <= body.length; n++) {
+    final p = body.length - 2 - n;
+    if (body[p] != n) continue;
+    final chars = body.sublist(p + 1, p + 1 + n);
+    if (chars.every((c) => c >= 0x20 && c < 0x7F)) {
+      title = String.fromCharCodes(chars);
+      break;
+    }
+  }
+  return StoredSchedule(
+    id: id,
+    title: title,
+    start: DateTime.fromMillisecondsSinceEpoch(t * 1000, isUtc: true).toLocal(),
+    wake: at(14) == 0x01,
+    fade: Duration(milliseconds: fadeDs * 100),
+    enabled: at(4) == 0x01,
+    ran: at(5) == 0x01,
+  );
+}

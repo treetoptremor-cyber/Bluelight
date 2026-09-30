@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../bulb_scheduler.dart';
+import '../hub.dart';
 import '../hue_ble.dart';
 import '../models.dart';
 import '../store.dart';
@@ -42,84 +44,111 @@ bool _needsApp(AppStore store, Routine r) {
       p.looks.values.any((l) => l.on && l.mode == HueMode.color);
 }
 
+/// Where [r] will run: on the bulbs (and how many hold it) or in the app.
+String _where(AppStore store, BulbScheduler? scheduler, Routine r) {
+  if (!r.enabled) return '';
+  if (_needsApp(store, r)) return ' · needs the app open';
+  if (scheduler == null) return '';
+  final total = store.lightIdsFor(r.targetId).length;
+  final on = scheduler.lightsArmedFor(r.id);
+  if (scheduler.syncing && on < total) return ' · syncing to bulbs…';
+  return on >= total && total > 0
+      ? ' · on $on/$total bulbs ✓'
+      : ' · on $on/$total bulbs (open the app near the others)';
+}
+
 /// Lists routines.
 class RoutinesPage extends StatelessWidget {
   const RoutinesPage({super.key});
 
   @override
   Widget build(BuildContext context) {
+    final scheduler = AppScope.of(context).scheduler;
     return AppBuilder(
-      builder: (context, store, hub) {
-        final theme = Theme.of(context);
-        return Scaffold(
-          appBar: AppBar(title: const Text('Routines')),
-          floatingActionButton: store.lights.isEmpty
-              ? null
-              : FloatingActionButton.extended(
-                  onPressed: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const RoutineEditPage(),
-                    ),
-                  ),
-                  icon: const Icon(Icons.add),
-                  label: const Text('New routine'),
+      builder: (context, store, hub) => ListenableBuilder(
+        listenable: scheduler ?? ValueNotifier(0),
+        builder: (context, _) => _build(context, store, hub),
+      ),
+    );
+  }
+
+  Widget _build(BuildContext context, AppStore store, HueHub hub) {
+    final scheduler = AppScope.of(context).scheduler;
+    final theme = Theme.of(context);
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Routines'),
+        bottom: scheduler?.syncing ?? false
+            ? const PreferredSize(
+                preferredSize: Size.fromHeight(4),
+                child: LinearProgressIndicator(),
+              )
+            : null,
+      ),
+      floatingActionButton: store.lights.isEmpty
+          ? null
+          : FloatingActionButton.extended(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => const RoutineEditPage(),
                 ),
-          body: ListView(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 96),
-            children: [
-              Card(
-                color: theme.colorScheme.secondaryContainer,
-                child: const ListTile(
-                  leading: Icon(Icons.info_outline),
-                  title: Text('Stored on your lights'),
-                  subtitle: Text(
-                    'Routines are saved on the bulbs themselves, so they run '
-                    'with the app closed and your phone away. Each bulb holds '
-                    'the next few runs; opening the app tops them up, so '
-                    'open it at least every couple of days. Colour presets '
-                    'can only run while the app is open.',
+              ),
+              icon: const Icon(Icons.add),
+              label: const Text('New routine'),
+            ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 96),
+        children: [
+          Card(
+            color: theme.colorScheme.secondaryContainer,
+            child: const ListTile(
+              leading: Icon(Icons.info_outline),
+              title: Text('Stored on your lights'),
+              subtitle: Text(
+                'Routines are saved on the bulbs themselves, so they run '
+                'with the app closed and your phone away. Each bulb holds '
+                'the next few runs; opening the app tops them up, so '
+                'open it at least every couple of days. Colour presets '
+                'can only run while the app is open.',
+              ),
+            ),
+          ),
+          if (store.routines.isEmpty)
+            Padding(
+              padding: const EdgeInsets.all(32),
+              child: Text(
+                store.lights.isEmpty
+                    ? 'Add lights first.'
+                    : 'No routines yet. Try a slow wake-up or an evening '
+                          'wind-down.',
+                textAlign: TextAlign.center,
+              ),
+            ),
+          for (final r in store.routines)
+            Card(
+              child: ListTile(
+                title: Text(
+                  '${TimeOfDay(hour: r.minuteOfDay ~/ 60, minute: r.minuteOfDay % 60).format(context)} · ${r.name}',
+                ),
+                subtitle: Text(
+                  '${_daysLabel(r.weekdays)} · ${store.nameOf(r.targetId)}\n'
+                  '${_actionLabel(store, r)}'
+                  '${_where(store, scheduler, r)}',
+                ),
+                isThreeLine: true,
+                trailing: Switch(
+                  value: r.enabled,
+                  onChanged: (v) => store.saveRoutine(r.copyWith(enabled: v)),
+                ),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => RoutineEditPage(routineId: r.id),
                   ),
                 ),
               ),
-              if (store.routines.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.all(32),
-                  child: Text(
-                    store.lights.isEmpty
-                        ? 'Add lights first.'
-                        : 'No routines yet. Try a slow wake-up or an evening '
-                              'wind-down.',
-                    textAlign: TextAlign.center,
-                  ),
-                ),
-              for (final r in store.routines)
-                Card(
-                  child: ListTile(
-                    title: Text(
-                      '${TimeOfDay(hour: r.minuteOfDay ~/ 60, minute: r.minuteOfDay % 60).format(context)} · ${r.name}',
-                    ),
-                    subtitle: Text(
-                      '${_daysLabel(r.weekdays)} · ${store.nameOf(r.targetId)}\n'
-                      '${_actionLabel(store, r)}'
-                      '${_needsApp(store, r) ? ' · needs the app open' : ''}',
-                    ),
-                    isThreeLine: true,
-                    trailing: Switch(
-                      value: r.enabled,
-                      onChanged: (v) =>
-                          store.saveRoutine(r.copyWith(enabled: v)),
-                    ),
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) => RoutineEditPage(routineId: r.id),
-                      ),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        );
-      },
+            ),
+        ],
+      ),
     );
   }
 }

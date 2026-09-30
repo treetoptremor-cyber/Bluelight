@@ -362,6 +362,7 @@ class HueLight {
       await device.connect(timeout: const Duration(seconds: 12), mtu: null);
     }
     token.check();
+    diag('ble', '${_tag()} connected, mtu ${device.mtuNow}');
 
     if (Platform.isAndroid) {
       status('Pairing… accept the pairing request if Android asks.');
@@ -497,13 +498,19 @@ class HueLight {
     BluetoothCharacteristic c,
     List<int> value, {
     bool fast = false,
+    bool long = false,
   }) async {
     if (HueUuids.neverWrite.contains(c.characteristicUuid)) {
       throw StateError('Refusing to write ${c.characteristicUuid}');
     }
     final noResponse = fast && c.properties.writeWithoutResponse;
     try {
-      await c.write(value, withoutResponse: noResponse);
+      await c.write(
+        value,
+        withoutResponse: noResponse,
+        // Schedule payloads (~65 bytes) can exceed MTU-3.
+        allowLongWrite: long && !noResponse,
+      );
     } catch (e) {
       diag(
         'ble',
@@ -743,7 +750,7 @@ class HueLight {
         .firstWhere(accept)
         .timeout(const Duration(seconds: 6));
     diag('sched', '${_tag()} -> ${hexBytes(payload)}');
-    await _write(c, payload);
+    await _write(c, payload, long: payload.length > 20);
     return reply;
   }
 
@@ -756,39 +763,33 @@ class HueLight {
     return (r as ScheduleList).ids;
   }
 
-  /// Title of a stored schedule, or null if it can't be read.
-  Future<String?> scheduleTitle(int id) async {
+  /// A stored schedule read back from the bulb, or null if it can't be.
+  Future<StoredSchedule?> readSchedule(int id) async {
     final c = _schedules;
     if (c == null) return null;
-    final completer = Completer<String?>();
+    final completer = Completer<StoredSchedule?>();
     final sub = c.onValueReceived.listen((v) {
-      // Read-back: 02 00 <id_le> <len> 00 00 <body>; the title length sits
-      // at body offset 45 and the title follows.
       if (v.length > 8 && v[0] == ScheduleOp.read && v[1] == 0x00) {
         final rid = v[2] | (v[3] << 8);
         if (rid != id || completer.isCompleted) return;
-        final body = v.sublist(8);
-        const titleLenAt = 48 - 3;
-        if (body.length <= titleLenAt) return completer.complete(null);
-        final n = body[titleLenAt];
-        final end = titleLenAt + 1 + n;
-        completer.complete(
-          end <= body.length
-              ? String.fromCharCodes(body.sublist(titleLenAt + 1, end))
-              : null,
-        );
+        completer.complete(parseScheduleReadback(v));
       }
     });
     try {
       if (_scheduleSub == null) await listSchedules(); // enables notify
       await _write(c, [ScheduleOp.read, id & 0xFF, id >> 8, 0x00, 0x00]);
       return await completer.future.timeout(const Duration(seconds: 6));
-    } catch (_) {
+    } catch (e) {
+      diag('sched', '${_tag()} reading schedule $id failed: $e');
       return null;
     } finally {
       await sub.cancel();
     }
   }
+
+  /// Title of a stored schedule, or null if it can't be read.
+  Future<String?> scheduleTitle(int id) async =>
+      (await readSchedule(id))?.title;
 
   /// Stores a schedule on the bulb. Returns its id, or null if refused.
   Future<int?> createSchedule({

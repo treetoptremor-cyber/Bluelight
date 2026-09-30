@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
+import 'background_task.dart';
 import 'color_utils.dart';
 import 'diagnostics.dart';
 import 'hue_ble.dart';
@@ -88,6 +89,10 @@ class HueHub extends ChangeNotifier {
   final _fades = <String, _Fade>{}; // by target id
   late final AppLifecycleListener _lifecycle;
   bool _paused = false;
+
+  /// Whether the lights were actually released for the background (not
+  /// just held for a sync to finish).
+  bool _released = false;
   bool _disposed = false;
 
   static const _unreachableAfter = Duration(seconds: 10);
@@ -244,9 +249,19 @@ class HueHub extends ChangeNotifier {
     link.light.dispose();
   }
 
-  void _pause() {
-    diag('app', 'background: releasing lights');
+  /// Runs before the lights are released when the app goes to the
+  /// background (e.g. finishing a routine sync), with iOS background time.
+  Future<void> Function()? beforeRelease;
+
+  Future<void> _pause() async {
     _paused = true;
+    final hold = beforeRelease;
+    if (hold != null) {
+      await BackgroundTask.run(hold);
+      if (!_paused || _disposed) return; // back in the foreground meanwhile
+    }
+    diag('app', 'background: releasing lights');
+    _released = true;
     for (final f in _fades.values) {
       f.timer?.cancel();
     }
@@ -261,8 +276,11 @@ class HueHub extends ChangeNotifier {
   void _resume() {
     // iOS also reports a resume at launch; only reconnect after a pause.
     if (!_paused) return;
-    diag('app', 'foreground: reconnecting lights');
     _paused = false;
+    // Back before the lights were let go: they're still connected.
+    if (!_released) return;
+    _released = false;
+    diag('app', 'foreground: reconnecting lights');
     for (final link in _links.values) {
       _start(link);
     }
