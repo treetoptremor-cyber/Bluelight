@@ -40,6 +40,7 @@ class _Link {
   String? error;
   CancelToken? token;
   StreamSubscription<HueLightState>? stateSub;
+  DateTime? lastRecycle;
 }
 
 /// A brightness ramp on some lights, e.g. a sleep timer or a routine.
@@ -156,6 +157,7 @@ class HueHub extends ChangeNotifier {
       if (_links.containsKey(id)) continue;
       final link = _Link(id, HueLight(BluetoothDevice.fromId(id)));
       link.stateSub = link.light.stateStream.listen((_) => _notify());
+      link.light.onBroken = (why) => _recycle(link, why);
       _links[id] = link;
       if (!_paused) _start(link);
     }
@@ -238,6 +240,23 @@ class HueHub extends ChangeNotifier {
     } catch (_) {
       // Already gone.
     }
+  }
+
+  /// Drops a link that has gone stale and reconnects it from scratch, at
+  /// most once every 20 seconds per light.
+  Future<void> _recycle(_Link link, String why) async {
+    final now = DateTime.now();
+    final last = link.lastRecycle;
+    if (_paused ||
+        _disposed ||
+        (last != null && now.difference(last) < const Duration(seconds: 20))) {
+      return;
+    }
+    link.lastRecycle = now;
+    diag('link', '${store.nameOf(link.id)}: reconnecting ($why)');
+    await _release(link);
+    if (_paused || _disposed || _links[link.id] != link) return;
+    _start(link);
   }
 
   void _drop(String id) {

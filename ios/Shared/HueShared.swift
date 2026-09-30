@@ -77,6 +77,26 @@ enum HueShared {
   }
 }
 
+// MARK: - Log
+
+/// Appends to the app's diagnostics log (Documents/diagnostics.log) so a
+/// widget tap that did nothing can be explained from the Diagnostics screen.
+/// Only works where the intent runs inside the app's process.
+func hueLog(_ message: String) {
+  guard
+    let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+  else { return }
+  let f = DateFormatter()
+  f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+  let line = "\(f.string(from: Date())) [widget] \(message)\n"
+  let url = docs.appendingPathComponent("diagnostics.log")
+  if let h = try? FileHandle(forWritingTo: url) {
+    h.seekToEndOfFile()
+    h.write(Data(line.utf8))
+    try? h.close()
+  }
+}
+
 // MARK: - Bluetooth
 
 /// Switches Hue Bluetooth bulbs on or off with CoreBluetooth: connect by
@@ -107,18 +127,21 @@ final class HueBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate, @u
   }
 
   /// Returns how many lights were switched.
-  func setPower(_ ids: [String], on: Bool, timeout: TimeInterval = 10) async -> Int {
+  func setPower(_ ids: [String], on: Bool, timeout: TimeInterval = 20) async -> Int {
     let uuids = ids.compactMap(UUID.init(uuidString:))
+    hueLog("power \(on ? "on" : "off") for \(uuids.count) of \(ids.count) lights")
     guard !uuids.isEmpty else { return 0 }
     return await withCheckedContinuation { cont in
       queue.async {
         self.whenPoweredOn { ready in
           guard ready, let central = self.central else {
+            hueLog("bluetooth not ready")
             cont.resume(returning: 0)
             return
           }
           let peripherals = central.retrievePeripherals(withIdentifiers: uuids)
           if peripherals.isEmpty {
+            hueLog("no known peripherals for those ids")
             cont.resume(returning: 0)
             return
           }
@@ -128,6 +151,7 @@ final class HueBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate, @u
           let finish = {
             if !resumed {
               resumed = true
+              hueLog("switched \(ok) of \(peripherals.count)")
               cont.resume(returning: ok)
             }
           }
@@ -169,6 +193,7 @@ final class HueBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate, @u
     guard !job.finished else { return }
     job.finished = true
     jobs[job.peripheral.identifier] = nil
+    if !success { hueLog("failed on \(job.peripheral.identifier.uuidString.prefix(8))") }
     central?.cancelPeripheralConnection(job.peripheral)
     job.done(success)
   }

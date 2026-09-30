@@ -61,7 +61,7 @@ struct LightsWidgetView: View {
 
   private var capacity: Int {
     switch family {
-    case .systemSmall: return 2
+    case .systemSmall: return 1
     case .systemMedium: return 4
     default: return 8
     }
@@ -87,25 +87,35 @@ struct LightsWidgetView: View {
             .buttonStyle(.plain)
           }
         }
-        if family != .systemSmall {
-          HStack(spacing: 8) {
-            Button(intent: AllOnIntent()) {
-              Label("All on", systemImage: "lightbulb.fill")
-                .font(.caption.weight(.semibold))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
-                .background(.quaternary, in: Capsule())
+        HStack(spacing: 8) {
+          Button(intent: AllOnIntent()) {
+            Group {
+              if family == .systemSmall {
+                Image(systemName: "lightbulb.fill")
+              } else {
+                Label("All on", systemImage: "lightbulb.fill")
+              }
             }
-            .buttonStyle(.plain)
-            Button(intent: AllOffIntent()) {
-              Label("All off", systemImage: "power")
-                .font(.caption.weight(.semibold))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
-                .background(.quaternary, in: Capsule())
-            }
-            .buttonStyle(.plain)
+            .font(.caption.weight(.semibold))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+            .background(.quaternary, in: Capsule())
           }
+          .buttonStyle(.plain)
+          Button(intent: AllOffIntent()) {
+            Group {
+              if family == .systemSmall {
+                Image(systemName: "power")
+              } else {
+                Label("All off", systemImage: "power")
+              }
+            }
+            .font(.caption.weight(.semibold))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+            .background(.quaternary, in: Capsule())
+          }
+          .buttonStyle(.plain)
         }
       }
     }

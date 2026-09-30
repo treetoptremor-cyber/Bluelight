@@ -296,6 +296,14 @@ class HueLight {
   /// Model number from the Device Information service, if readable.
   String? get modelNumber => _modelNumber;
 
+  /// Called when the connection looks stale: the bulb refuses writes with
+  /// ATT error 0x80, or answers reads with scrambled data. The owner should
+  /// drop the link and reconnect from scratch.
+  void Function(String reason)? onBroken;
+
+  /// Bytes that aren't text, as a stale encrypted session returns.
+  static bool _garbled(String s) => s.runes.any((r) => r < 0x20 || r == 0xFFFD);
+
   String get name {
     for (final n in [_bulbName, device.platformName, device.advName]) {
       if (n != null && n.trim().isNotEmpty) return n.trim();
@@ -345,6 +353,17 @@ class HueLight {
       } on TimeoutException {
         throw StateError('Bluetooth is off. Turn it on and try again.');
       }
+    }
+
+    // A connection left over from before the app was in the background can
+    // still read as connected; start from a clean one.
+    if (device.isConnected) {
+      try {
+        await device.disconnect();
+      } catch (_) {
+        // Already gone.
+      }
+      token.check();
     }
 
     status('Connecting…');
@@ -462,6 +481,16 @@ class HueLight {
 
     _bulbName = await readString(HueUuids.bulbName);
     _modelNumber = await readString(HueUuids.modelNumber);
+    final garbled = [
+      _bulbName,
+      _modelNumber,
+    ].any((v) => v != null && _garbled(v));
+    if (garbled) {
+      _bulbName = null;
+      _modelNumber = null;
+      diag('ble', '${_tag()} read scrambled text; link looks stale');
+      onBroken?.call('scrambled reads');
+    }
   }
 
   void _onValue(BluetoothCharacteristic c, List<int> value) {
@@ -518,6 +547,7 @@ class HueLight {
             '${hexBytes(value)}${noResponse ? ' (no response)' : ''} '
             'failed: $e',
       );
+      if ('$e'.contains('apple-code: 128')) onBroken?.call('ATT error 0x80');
       rethrow;
     }
   }
