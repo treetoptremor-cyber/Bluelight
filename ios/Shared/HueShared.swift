@@ -14,7 +14,7 @@ import WidgetKit
 // MARK: - Shared data
 
 enum HueShared {
-  static let appGroup = "group.com.hueble.hueBleRemote"
+  static let appGroup = "group.com.hue.bluelight"
   static let key = "widgetData"
 
   /// A light or group as shown in widgets.
