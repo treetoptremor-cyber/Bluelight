@@ -18,7 +18,26 @@ class WidgetBridge {
     if (!Platform.isIOS) return;
     store.addListener(_schedule);
     hub.addListener(_schedule);
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == 'open' && call.arguments is String) {
+        onOpen?.call(call.arguments as String);
+      }
+    });
     _schedule();
+  }
+
+  /// Called with a light or group id when a widget is tapped.
+  void Function(String id)? onOpen;
+
+  /// Opens a widget tap that launched the app.
+  Future<void> openPending() async {
+    if (!Platform.isIOS) return;
+    try {
+      final id = await _channel.invokeMethod<String>('takePendingOpen');
+      if (id != null) onOpen?.call(id);
+    } catch (e) {
+      diag('widgets', 'pending open failed: $e');
+    }
   }
 
   final AppStore store;

@@ -62,72 +62,87 @@ struct LightsWidgetView: View {
   private var capacity: Int {
     switch family {
     case .systemSmall: return 1
-    case .systemMedium: return 4
-    default: return 8
+    case .systemMedium: return 2
+    default: return 6
     }
+  }
+
+  static func openURL(_ id: String?) -> URL {
+    var c = URLComponents()
+    c.scheme = "bluelight"
+    c.host = "open"
+    if let id { c.queryItems = [URLQueryItem(name: "id", value: id)] }
+    return c.url ?? URL(string: "bluelight://open")!
   }
 
   var body: some View {
     let targets = Array(entry.targets.prefix(capacity))
-    if targets.isEmpty {
-      VStack(spacing: 6) {
-        Image(systemName: "lightbulb").font(.title2)
-        Text("Open Bluelight to add lights").font(.caption).multilineTextAlignment(.center)
-      }
-    } else {
-      VStack(spacing: 8) {
-        LazyVGrid(
-          columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: family == .systemSmall ? 1 : 2),
-          spacing: 8
-        ) {
-          ForEach(targets, id: \.id) { t in
-            Button(intent: SetPowerIntent(target: TargetEntity(id: t.id, name: t.name), value: !t.on)) {
-              TargetTile(target: t)
+    Group {
+      if targets.isEmpty {
+        VStack(spacing: 6) {
+          Image(systemName: "lightbulb").font(.title2)
+          Text("Open Bluelight to add lights").font(.caption).multilineTextAlignment(.center)
+        }
+      } else {
+        VStack(spacing: 8) {
+          LazyVGrid(
+            columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: family == .systemSmall ? 1 : 2),
+            spacing: 8
+          ) {
+            ForEach(targets, id: \.id) { t in
+              TargetTile(target: t, compact: family == .systemSmall)
+            }
+          }
+          HStack(spacing: 8) {
+            Button(intent: AllOnIntent()) {
+              Group {
+                if family == .systemSmall {
+                  Image(systemName: "lightbulb.fill")
+                } else {
+                  Label("All on", systemImage: "lightbulb.fill")
+                }
+              }
+              .font(.caption.weight(.semibold))
+              .frame(maxWidth: .infinity)
+              .padding(.vertical, 6)
+              .background(.quaternary, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            Button(intent: AllOffIntent()) {
+              Group {
+                if family == .systemSmall {
+                  Image(systemName: "power")
+                } else {
+                  Label("All off", systemImage: "power")
+                }
+              }
+              .font(.caption.weight(.semibold))
+              .frame(maxWidth: .infinity)
+              .padding(.vertical, 6)
+              .background(.quaternary, in: Capsule())
             }
             .buttonStyle(.plain)
           }
         }
-        HStack(spacing: 8) {
-          Button(intent: AllOnIntent()) {
-            Group {
-              if family == .systemSmall {
-                Image(systemName: "lightbulb.fill")
-              } else {
-                Label("All on", systemImage: "lightbulb.fill")
-              }
-            }
-            .font(.caption.weight(.semibold))
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .background(.quaternary, in: Capsule())
-          }
-          .buttonStyle(.plain)
-          Button(intent: AllOffIntent()) {
-            Group {
-              if family == .systemSmall {
-                Image(systemName: "power")
-              } else {
-                Label("All off", systemImage: "power")
-              }
-            }
-            .font(.caption.weight(.semibold))
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .background(.quaternary, in: Capsule())
-          }
-          .buttonStyle(.plain)
-        }
       }
     }
+    // Tapping the widget itself opens the app; the controls inside switch
+    // lights without opening it.
+    .widgetURL(Self.openURL(nil))
   }
 }
 
+/// One light or group: its name opens the app on it, the bulb switches it,
+/// and the steps set a brightness (widgets can't have sliders).
 struct TargetTile: View {
   let target: HueShared.Target
+  let compact: Bool
 
-  var body: some View {
-    let color = Color(hex: target.color)
-    HStack(spacing: 8) {
+  private static let steps = [25, 50, 75, 100]
+
+  @ViewBuilder
+  private func nameLabel(color: Color) -> some View {
+    let label = HStack(spacing: 8) {
       Circle()
         .fill(target.on ? color : Color.gray.opacity(0.25))
         .frame(width: 14, height: 14)
@@ -137,12 +152,45 @@ struct TargetTile: View {
         .lineLimit(1)
         .minimumScaleFactor(0.8)
       Spacer(minLength: 0)
-      Image(systemName: target.on ? "lightbulb.fill" : "lightbulb")
-        .font(.caption)
-        .foregroundStyle(target.on ? .primary : .secondary)
+    }
+    // Small widgets only have the one tap target (the whole widget).
+    if compact {
+      label
+    } else {
+      Link(destination: LightsWidgetView.openURL(target.id)) { label }
+    }
+  }
+
+  var body: some View {
+    let color = Color(hex: target.color)
+    VStack(spacing: 4) {
+      HStack(spacing: 8) {
+        nameLabel(color: color)
+        Button(intent: SetPowerIntent(target: TargetEntity(id: target.id, name: target.name), value: !target.on)) {
+          Image(systemName: target.on ? "lightbulb.fill" : "lightbulb")
+            .font(.callout)
+            .foregroundStyle(target.on ? .primary : .secondary)
+            .frame(width: 28, height: 28)
+        }
+        .buttonStyle(.plain)
+      }
+      if !compact {
+        HStack(spacing: 4) {
+          ForEach(Self.steps, id: \.self) { pct in
+            Button(intent: SetBrightnessIntent(target: TargetEntity(id: target.id, name: target.name), percent: pct)) {
+              Text("\(pct)")
+                .font(.system(size: 11, weight: .semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+                .background(.black.opacity(0.12), in: Capsule())
+            }
+            .buttonStyle(.plain)
+          }
+        }
+      }
     }
     .padding(.horizontal, 10)
-    .padding(.vertical, 10)
+    .padding(.vertical, 8)
     .frame(maxWidth: .infinity)
     .background(
       RoundedRectangle(cornerRadius: 14, style: .continuous)

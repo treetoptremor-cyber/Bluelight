@@ -9,6 +9,9 @@ import 'widget_bridge.dart';
 import 'ui/common.dart';
 import 'ui/dashboard_page.dart';
 import 'ui/designs.dart';
+import 'ui/target_page.dart';
+
+final navigatorKey = GlobalKey<NavigatorState>();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -23,7 +26,14 @@ Future<void> main() async {
     await scheduler.idle();
   };
   final runner = RoutineRunner(store, hub, scheduler: scheduler);
-  WidgetBridge(store, hub);
+  final widgets = WidgetBridge(store, hub);
+  widgets.onOpen = (id) {
+    if (store.group(id) == null && store.light(id) == null) return;
+    navigatorKey.currentState?.push(
+      MaterialPageRoute<void>(builder: (_) => TargetPage(targetId: id)),
+    );
+  };
+  WidgetsBinding.instance.addPostFrameCallback((_) => widgets.openPending());
   runApp(
     AppScope(
       store: store,
@@ -46,6 +56,7 @@ class BluelightApp extends StatelessWidget {
       builder: (context, _) {
         final design = AppDesign.fromName(store.design);
         return MaterialApp(
+          navigatorKey: navigatorKey,
           title: 'Bluelight',
           // Each design is its own look, light or dark.
           theme: design.theme(),

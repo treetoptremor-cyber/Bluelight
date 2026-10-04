@@ -107,29 +107,46 @@ final class HueBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate, @u
 
   private static let lightService = CBUUID(string: "932C32BD-0000-47A2-835A-A8D455B859DD")
   private static let power = CBUUID(string: "932C32BD-0002-47A2-835A-A8D455B859DD")
+  private static let brightness = CBUUID(string: "932C32BD-0003-47A2-835A-A8D455B859DD")
 
   private let queue = DispatchQueue(label: "hue.ble")
   private var central: CBCentralManager?
   private var stateWaiters: [(Bool) -> Void] = []
   private var jobs: [UUID: Job] = [:]
 
+  /// Characteristic writes to make on one light, in order.
   private final class Job {
     let peripheral: CBPeripheral
-    let value: Data
+    let steps: [(CBUUID, Data)]
     let done: (Bool) -> Void
+    var next = 0
     var finished = false
 
-    init(peripheral: CBPeripheral, value: Data, done: @escaping (Bool) -> Void) {
+    init(peripheral: CBPeripheral, steps: [(CBUUID, Data)], done: @escaping (Bool) -> Void) {
       self.peripheral = peripheral
-      self.value = value
+      self.steps = steps
       self.done = done
     }
   }
 
   /// Returns how many lights were switched.
-  func setPower(_ ids: [String], on: Bool, timeout: TimeInterval = 20) async -> Int {
+  func setPower(_ ids: [String], on: Bool) async -> Int {
+    await run(ids, label: "power \(on ? "on" : "off")", steps: [(Self.power, Data([on ? 1 : 0]))])
+  }
+
+  /// Turns the lights on at [percent] brightness.
+  func setBrightness(_ ids: [String], percent: Int) async -> Int {
+    let level = UInt8(max(1, min(254, Int((Double(percent) * 2.54).rounded()))))
+    return await run(
+      ids, label: "brightness \(percent)%",
+      steps: [(Self.power, Data([1])), (Self.brightness, Data([level]))])
+  }
+
+  private func run(
+    _ ids: [String], label: String, steps: [(CBUUID, Data)], timeout: TimeInterval = 20
+  ) async -> Int {
     let uuids = ids.compactMap(UUID.init(uuidString:))
-    hueLog("power \(on ? "on" : "off") for \(uuids.count) of \(ids.count) lights")
+    hueLog("\(label) for \(uuids.count) of \(ids.count) lights")
     guard !uuids.isEmpty else { return 0 }
     return await withCheckedContinuation { cont in
       queue.async {
@@ -151,12 +168,12 @@ final class HueBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate, @u
           let finish = {
             if !resumed {
               resumed = true
-              hueLog("switched \(ok) of \(peripherals.count)")
+              hueLog("\(label): done on \(ok) of \(peripherals.count)")
               cont.resume(returning: ok)
             }
           }
           for p in peripherals {
-            let job = Job(peripheral: p, value: Data([on ? 1 : 0])) { success in
+            let job = Job(peripheral: p, steps: steps) { success in
               if success { ok += 1 }
               remaining -= 1
               if remaining == 0 { finish() }
@@ -198,6 +215,14 @@ final class HueBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate, @u
     job.done(success)
   }
 
+  private func writeNext(_ job: Job, service: CBService) {
+    if job.next >= job.steps.count { return end(job, success: true) }
+    let (uuid, value) = job.steps[job.next]
+    guard let c = service.characteristics?.first(where: { $0.uuid == uuid })
+    else { return end(job, success: false) }
+    job.peripheral.writeValue(value, for: c, type: .withResponse)
+  }
+
   func centralManagerDidUpdateState(_ central: CBCentralManager) {
     guard central.state != .unknown, central.state != .resetting else { return }
     let waiters = stateWaiters
@@ -219,22 +244,24 @@ final class HueBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate, @u
     guard let job = jobs[peripheral.identifier] else { return }
     guard let service = peripheral.services?.first(where: { $0.uuid == Self.lightService })
     else { return end(job, success: false) }
-    peripheral.discoverCharacteristics([Self.power], for: service)
+    peripheral.discoverCharacteristics([Self.power, Self.brightness], for: service)
   }
 
   func peripheral(
     _ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?
   ) {
     guard let job = jobs[peripheral.identifier] else { return }
-    guard let c = service.characteristics?.first(where: { $0.uuid == Self.power })
-    else { return end(job, success: false) }
-    peripheral.writeValue(job.value, for: c, type: .withResponse)
+    writeNext(job, service: service)
   }
 
   func peripheral(
     _ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?
   ) {
-    if let job = jobs[peripheral.identifier] { end(job, success: error == nil) }
+    guard let job = jobs[peripheral.identifier] else { return }
+    if error != nil { return end(job, success: false) }
+    job.next += 1
+    guard let service = characteristic.service else { return end(job, success: false) }
+    writeNext(job, service: service)
   }
 }
 
@@ -290,6 +317,33 @@ struct SetPowerIntent: SetValueIntent, LiveActivityIntent {
     }
     _ = await HueBLE.shared.setPower(t.lights, on: value)
     HueShared.markSwitched(Set(t.lights), on: value)
+    HueShared.reloadWidgets()
+    return .result()
+  }
+}
+
+/// Sets a light or group to a brightness, switching it on.
+@available(iOS 17.0, *)
+struct SetBrightnessIntent: AppIntent, LiveActivityIntent {
+  static var title: LocalizedStringResource = "Set brightness"
+  static var description = IntentDescription("Sets a Hue light or group to a brightness.")
+
+  @Parameter(title: "Lights") var target: TargetEntity
+  @Parameter(title: "Percent") var percent: Int
+
+  init() {}
+
+  init(target: TargetEntity, percent: Int) {
+    self.target = target
+    self.percent = percent
+  }
+
+  func perform() async throws -> some IntentResult {
+    guard let t = HueShared.load().targets.first(where: { $0.id == target.id }) else {
+      return .result()
+    }
+    _ = await HueBLE.shared.setBrightness(t.lights, percent: percent)
+    HueShared.markSwitched(Set(t.lights), on: true)
     HueShared.reloadWidgets()
     return .result()
   }
