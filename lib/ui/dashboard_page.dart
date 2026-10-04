@@ -12,6 +12,7 @@ import 'add_lights_page.dart';
 import 'common.dart';
 import 'designs.dart';
 import 'diagnostics_page.dart';
+import 'schedule_experiment_page.dart';
 import 'group_edit_page.dart';
 import 'info_sheets.dart';
 import 'routines_page.dart';
@@ -54,6 +55,7 @@ class DashboardPage extends StatelessWidget {
                   'add' => nav.push(const AddLightsPage()),
                   'group' => nav.push(const GroupEditPage()),
                   'reorder' => nav.push(const _ReorderFavoritesPage()),
+                  'experiment' => nav.push(const ScheduleExperimentPage()),
                   _ => nav.push(const DiagnosticsPage()),
                 },
                 itemBuilder: (context) => [
@@ -68,6 +70,10 @@ class DashboardPage extends StatelessWidget {
                       value: 'reorder',
                       child: Text('Reorder favourites'),
                     ),
+                  const PopupMenuItem(
+                    value: 'experiment',
+                    child: Text('Schedule experiment'),
+                  ),
                   const PopupMenuItem(
                     value: 'diagnostics',
                     child: Text('Diagnostics'),

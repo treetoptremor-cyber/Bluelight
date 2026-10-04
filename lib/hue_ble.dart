@@ -829,6 +829,9 @@ class HueLight {
     required String title,
     int brightness = 254,
     int mireds = 447,
+    bool omitOn = false,
+    List<int>? recurrence,
+    int titleFieldDelta = 0,
   }) async {
     final rnd = math.Random.secure();
     final r = await _scheduleCommand(
@@ -840,6 +843,9 @@ class HueLight {
         uuid: [for (var i = 0; i < 16; i++) rnd.nextInt(256)],
         brightness: brightness,
         mireds: mireds.clamp(minMireds, _warmestMireds),
+        omitOn: omitOn,
+        recurrence: recurrence ?? const [0xFF, 0xFF, 0xFF, 0xFF],
+        titleFieldDelta: titleFieldDelta,
       ),
       (r) => r is ScheduleCreated || r is ScheduleRejected,
     );

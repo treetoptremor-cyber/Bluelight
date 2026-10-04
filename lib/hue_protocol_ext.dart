@@ -233,6 +233,12 @@ Uint8List buildSchedulePayload({
   int mireds = 447,
   bool enabled = true,
   int sourceId = _createSourceId,
+
+  // Experiments only: leave the on/off tag out, send other recurrence
+  // bytes, and shift the title-length field.
+  bool omitOn = false,
+  List<int> recurrence = _recurrenceNone,
+  int titleFieldDelta = 0,
 }) {
   if (uuid.length != 16) throw ArgumentError.value(uuid, 'uuid', '16 bytes');
   final fadeDs = (fade.inMilliseconds / 100).round();
@@ -251,14 +257,22 @@ Uint8List buildSchedulePayload({
   // The light state the schedule moves to. Sleep keeps the captured values.
   final b = wake ? brightness.clamp(1, 254) : 0x01;
   final m = wake ? mireds.clamp(minMireds, maxMireds) : 0x024c;
-  final state = [
-    0x00, 0x0e, //
-    StateTag.on, 1, wake ? 1 : 0,
-    StateTag.brightness, 1, b,
-    StateTag.mireds, 2, m & 0xFF, m >> 8,
-    StateTag.transition, 2, fadeDs & 0xFF, fadeDs >> 8,
+  final tlv = [
+    if (!omitOn) ...[StateTag.on, 1, wake ? 1 : 0],
+    StateTag.brightness,
+    1,
+    b,
+    StateTag.mireds,
+    2,
+    m & 0xFF,
+    m >> 8,
+    StateTag.transition,
+    2,
+    fadeDs & 0xFF,
+    fadeDs >> 8,
   ];
-  final titleField = _titleFieldBase + titleBytes.length;
+  final state = [0x00, tlv.length, ...tlv];
+  final titleField = _titleFieldBase + titleBytes.length + titleFieldDelta;
 
   return Uint8List.fromList([
     ScheduleOp.write,
@@ -269,7 +283,7 @@ Uint8List buildSchedulePayload({
     titleField & 0xFF, titleField >> 8,
     ...uuid,
     wake ? 0x00 : 0x01, // sleep: lights off at the end
-    ..._recurrenceNone,
+    ...recurrence,
     titleBytes.length,
     ...titleBytes,
     enabled ? 1 : 0,
